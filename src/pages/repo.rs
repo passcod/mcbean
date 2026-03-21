@@ -379,9 +379,9 @@ pub fn RepoPage() -> impl IntoView {
         // ── Proposals bar ────────────────────────────────────────────────────
         <Suspense fallback=|| ()>
             {move || {
+                let rid = repo_id();
                 proposals_resource.get().map(|result| match result {
                     Ok(list) if !list.is_empty() => {
-                        let rid = repo_id();
                         view! {
                             <div class="box py-3 mb-5">
                                 <p class="has-text-grey is-size-7 mb-2">"Open proposals"</p>
