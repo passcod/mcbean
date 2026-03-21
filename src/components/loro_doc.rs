@@ -7,6 +7,53 @@ use tracing::{debug, info};
 
 use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind, slugify};
 
+/// Serialise a rule back to Markdown in a form that marq will re-parse
+/// correctly, preserving all paragraphs.
+///
+/// Single-paragraph rules use the compact inline form:
+/// ```text
+/// r[id]
+/// The rule text.
+/// ```
+///
+/// Multi-paragraph rules (text contains `\n\n`) use blockquote form so that
+/// marq captures every paragraph as part of the same `Req` element:
+/// ```text
+/// > r[id]
+/// > First paragraph line 1
+/// > First paragraph line 2
+/// >
+/// > Second paragraph line 1
+/// ```
+pub fn rule_to_markdown(rule_id: &str, text: &str) -> String {
+    let trimmed = text.trim();
+    let mut out = format!("> r[{rule_id}]\n");
+    let paragraphs: Vec<&str> = trimmed.split("\n\n").collect();
+    for (i, para) in paragraphs.iter().enumerate() {
+        if i > 0 {
+            out.push_str(">\n");
+        }
+        for line in para.lines() {
+            out.push_str("> ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// Truncate `s` to at most `max_bytes` bytes while respecting UTF-8 char boundaries.
+#[cfg(feature = "ssr")]
+pub(crate) fn preview(s: &str, max_bytes: usize) -> &str {
+    let end = max_bytes.min(s.len());
+    let mut boundary = end;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
+}
+
 // ── Tree shape constants ──────────────────────────────────────────────────────
 
 const KIND_SPEC: &str = "spec";
@@ -238,7 +285,7 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
                     index = i,
                     rule_id = %id,
                     text_bytes = text.len(),
-                    text_preview = %&text[..text.len().min(120)],
+                    text_preview = %preview(text, 120),
                     "insert_flat_blocks: rule"
                 );
                 let parent = stack.last().map(|(_, id)| *id).unwrap_or(file_node);
@@ -256,7 +303,7 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
                 debug!(
                     index = i,
                     text_bytes = text.len(),
-                    text_preview = %&text[..text.len().min(80)],
+                    text_preview = %preview(text, 80),
                     "insert_flat_blocks: paragraph"
                 );
                 let parent = stack.last().map(|(_, id)| *id).unwrap_or(file_node);
@@ -358,11 +405,7 @@ fn write_markdown_under(tree: &LoroTree, parent: TreeParentId, out: &mut String)
             KIND_RULE => {
                 let rule_id = get_str(&meta, "rule_id");
                 let text = get_text_str(&meta);
-                out.push_str("r[");
-                out.push_str(&rule_id);
-                out.push_str("]\n");
-                out.push_str(text.trim());
-                out.push_str("\n\n");
+                out.push_str(&rule_to_markdown(&rule_id, &text));
             }
             KIND_PARA => {
                 let text = get_text_str(&meta);
@@ -469,4 +512,295 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+// ── Full-pipeline tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::spec_block_editor::SpecBlockKind;
+
+    fn run<F: std::future::Future<Output = LoroDoc>>(f: F) -> LoroDoc {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// Build a doc from a single spec/file and flatten it back to blocks.
+    fn pipeline(content: &str) -> Vec<crate::components::spec_block_editor::SpecBlock> {
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = run(build_doc_from_specs(&specs));
+        loro_doc_to_blocks(&doc)
+    }
+
+    // ── basic sanity ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pipeline_single_rule() {
+        let blocks = pipeline("r[foo.bar]\nThe rule text.\n");
+        assert_eq!(blocks.len(), 1, "{blocks:#?}");
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { id, text } => {
+                assert_eq!(id, "foo.bar");
+                assert_eq!(text, "The rule text.");
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pipeline_heading_and_rule() {
+        let blocks = pipeline("# Section\n\nr[s.rule]\nSome text.\n");
+        assert_eq!(blocks.len(), 2, "{blocks:#?}");
+        assert!(matches!(
+            &blocks[0].kind,
+            SpecBlockKind::Heading { level: 1, .. }
+        ));
+        assert!(matches!(&blocks[1].kind, SpecBlockKind::Rule { .. }));
+    }
+
+    // ── multi-paragraph blockquote rule ──────────────────────────────────────
+
+    const MULTI_PARA: &str = "\
+> r[iso.cdrom-partscan+4]
+> When the ISO is booted as optical media (e.g. `/dev/sr0` in a VM), the
+> Linux kernel does not parse the GPT appended partitions because the CD-ROM
+> block device driver exposes the device as a single block device with an
+> ISO 9660 filesystem. As a result, partition device nodes are never created
+> and `/dev/disk/by-partuuid/` symlinks for the appended BESIMAGES and
+> BESCONF partitions do not appear.
+>
+> The installer must handle this transparently. When the well-known
+> PARTUUIDs are not present in `/dev/disk/by-partuuid/`, the installer
+> must identify the boot device and create a loop device.
+>
+> This must happen early in the installer's startup.
+";
+
+    const IN_CONTEXT: &str = "\
+# Live ISO
+
+r[iso.simple]
+A simple rule before.
+
+> r[iso.cdrom-partscan+4]
+> When the ISO is booted as optical media (e.g. `/dev/sr0` in a VM), the
+> Linux kernel does not parse the GPT appended partitions because the CD-ROM
+> block device driver exposes the device as a single block device with an
+> ISO 9660 filesystem. As a result, partition device nodes are never created
+> and `/dev/disk/by-partuuid/` symlinks for the appended BESIMAGES and
+> BESCONF partitions do not appear.
+>
+> The installer must handle this transparently. When the well-known
+> PARTUUIDs are not present in `/dev/disk/by-partuuid/`, the installer
+> must identify the boot device and create a loop device.
+>
+> This must happen early in the installer's startup.
+
+r[iso.after]
+A simple rule after.
+";
+
+    #[test]
+    fn test_pipeline_multi_para_rule_count() {
+        let blocks = pipeline(MULTI_PARA);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "expected 1 Rule block, got {}:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_pipeline_multi_para_rule_kind() {
+        let blocks = pipeline(MULTI_PARA);
+        assert!(
+            matches!(&blocks[0].kind, SpecBlockKind::Rule { .. }),
+            "{:?}",
+            blocks[0].kind
+        );
+    }
+
+    #[test]
+    fn test_pipeline_multi_para_rule_text_has_all_paras() {
+        let blocks = pipeline(MULTI_PARA);
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(text.contains("optical media"), "missing para 1: {text:?}");
+                assert!(
+                    text.contains("handle this transparently"),
+                    "missing para 2: {text:?}"
+                );
+                assert!(
+                    text.contains("early in the installer"),
+                    "missing para 3: {text:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pipeline_in_context_block_count() {
+        let blocks = pipeline(IN_CONTEXT);
+        println!("\n=== pipeline blocks ({}) ===", blocks.len());
+        for (i, b) in blocks.iter().enumerate() {
+            match &b.kind {
+                SpecBlockKind::Heading { level, text, .. } => {
+                    println!("  [{i}] Heading({level}, {text:?})")
+                }
+                SpecBlockKind::Rule { id, text } => {
+                    println!("  [{i}] Rule({id:?}, {} lines)", text.lines().count())
+                }
+                SpecBlockKind::Paragraph { text } => {
+                    println!("  [{i}] Paragraph({:?})", &text[..text.len().min(60)])
+                }
+            }
+        }
+        println!("=== end ===\n");
+        // Heading + iso.simple + iso.cdrom-partscan+4 + iso.after
+        assert_eq!(
+            blocks.len(),
+            4,
+            "expected 4 blocks, got {}:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_pipeline_in_context_cdrom_rule_text() {
+        let blocks = pipeline(IN_CONTEXT);
+        let rule = blocks.iter().find(
+            |b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "iso.cdrom-partscan+4")
+        ).expect("cdrom rule not found");
+        match &rule.kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(text.contains("optical media"), "missing para 1: {text:?}");
+                assert!(
+                    text.contains("handle this transparently"),
+                    "missing para 2: {text:?}"
+                );
+                assert!(
+                    text.contains("early in the installer"),
+                    "missing para 3: {text:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // ── round-trip: build → markdown → same structure ────────────────────────
+
+    /// Simulate the full round-trip that the read view performs:
+    /// build_doc_from_specs → doc_to_markdown_files → parse_blocks_from_content.
+    /// Multi-paragraph rules must survive this round-trip intact.
+    fn round_trip_pipeline(content: &str) -> Vec<crate::components::spec_block_editor::SpecBlock> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = rt.block_on(build_doc_from_specs(&specs));
+
+        // This is what list_rendered_specs and doc_to_markdown_files do.
+        let markdown_files = doc_to_markdown_files(&doc);
+        assert_eq!(markdown_files.len(), 1, "expected one file in round-trip");
+
+        let (_, serialised_md) = &markdown_files[0];
+        println!("\n=== round-trip serialised Markdown ===\n{serialised_md}\n=== end ===\n");
+
+        rt.block_on(crate::components::spec_block_editor::parse_blocks_from_content(serialised_md))
+    }
+
+    #[test]
+    fn test_round_trip_single_para_rule_preserved() {
+        let blocks = round_trip_pipeline("r[foo.bar]\nThe rule text.\n");
+        assert_eq!(blocks.len(), 1, "{blocks:#?}");
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { id, text } => {
+                assert_eq!(id, "foo.bar");
+                assert_eq!(text.trim(), "The rule text.");
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_round_trip_multi_para_rule_count() {
+        let blocks = round_trip_pipeline(IN_CONTEXT);
+        println!("\n=== round-trip blocks ({}) ===", blocks.len());
+        for (i, b) in blocks.iter().enumerate() {
+            match &b.kind {
+                SpecBlockKind::Heading { level, text, .. } => {
+                    println!("  [{i}] Heading({level}, {text:?})")
+                }
+                SpecBlockKind::Rule { id, text } => {
+                    println!("  [{i}] Rule({id:?}, {} lines)", text.lines().count())
+                }
+                SpecBlockKind::Paragraph { text } => {
+                    println!("  [{i}] Paragraph({:?})", &text[..text.len().min(60)])
+                }
+            }
+        }
+        println!("=== end ===\n");
+        assert_eq!(
+            blocks.len(),
+            4,
+            "round-trip: expected Heading + 3 Rules, got {}:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_round_trip_multi_para_rule_text() {
+        let blocks = round_trip_pipeline(IN_CONTEXT);
+        let rule = blocks.iter().find(
+            |b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "iso.cdrom-partscan+4"),
+        ).expect("iso.cdrom-partscan+4 not found after round-trip");
+        match &rule.kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(text.contains("optical media"), "missing para 1: {text:?}");
+                assert!(
+                    text.contains("handle this transparently"),
+                    "missing para 2: {text:?}"
+                );
+                assert!(
+                    text.contains("early in the installer"),
+                    "missing para 3: {text:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pipeline_round_trip_rule_ids_preserved() {
+        let blocks = pipeline(IN_CONTEXT);
+        let ids: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| {
+                if let SpecBlockKind::Rule { id, .. } = &b.kind {
+                    Some(id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["iso.simple", "iso.cdrom-partscan+4", "iso.after"],
+            "{ids:?}"
+        );
+    }
 }

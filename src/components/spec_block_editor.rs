@@ -272,7 +272,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
     tracing::info!(
         content_bytes = content.len(),
         content_lines = content.lines().count(),
-        content_preview = %&content[..content.len().min(200)],
+        content_preview = %crate::components::loro_doc::preview(content, 200),
         "parse_blocks_from_content: entry"
     );
 
@@ -338,7 +338,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                     rule_id = %r.id,
                     raw_bytes = r.raw.len(),
                     raw_lines = r.raw.lines().count(),
-                    raw_preview = %&r.raw[..r.raw.len().min(300)],
+                    raw_preview = %crate::components::loro_doc::preview(&r.raw, 300),
                     "parse_blocks_from_content: req element — about to strip_blockquote_prefixes"
                 );
 
@@ -357,7 +357,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                     rule_id = %r.id,
                     prose_bytes = prose.len(),
                     prose_lines = prose.lines().count(),
-                    prose_preview = %&prose[..prose.len().min(300)],
+                    prose_preview = %crate::components::loro_doc::preview(&prose, 300),
                     "parse_blocks_from_content: stripped prose"
                 );
 
@@ -441,6 +441,528 @@ fn strip_blockquote_prefixes(raw: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper: run the async function in a single-threaded tokio runtime.
+    fn run(f: impl std::future::Future<Output = Vec<SpecBlock>>) -> Vec<SpecBlock> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    // ── strip_blockquote_prefixes ─────────────────────────────────────────────
+
+    #[test]
+    fn test_strip_blockquote_prefixes_simple() {
+        let input = "> hello\n> world";
+        assert_eq!(strip_blockquote_prefixes(input), "hello\nworld");
+    }
+
+    #[test]
+    fn test_strip_blockquote_prefixes_empty_marker_line() {
+        // A `>` with no trailing space (blank continuation line in a blockquote)
+        let input = "> para one\n>\n> para two";
+        assert_eq!(strip_blockquote_prefixes(input), "para one\n\npara two");
+    }
+
+    #[test]
+    fn test_strip_blockquote_prefixes_no_prefix() {
+        // Content without blockquote markers is returned unchanged.
+        let input = "plain text\nno markers";
+        assert_eq!(strip_blockquote_prefixes(input), "plain text\nno markers");
+    }
+
+    // ── parse_blocks_from_content: basic cases ────────────────────────────────
+
+    #[test]
+    fn test_parse_single_rule() {
+        let md = "r[foo.bar]\nThis is the rule text.\n";
+        let blocks = run(parse_blocks_from_content(md));
+        assert_eq!(
+            blocks.len(),
+            1,
+            "expected exactly one block, got: {blocks:#?}"
+        );
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { id, text } => {
+                assert_eq!(id, "foo.bar");
+                assert_eq!(text, "This is the rule text.");
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_heading_and_rule() {
+        let md = "# My Section\n\nr[sec.rule]\nThe rule.\n";
+        let blocks = run(parse_blocks_from_content(md));
+        assert_eq!(blocks.len(), 2, "{blocks:#?}");
+        assert!(matches!(
+            &blocks[0].kind,
+            SpecBlockKind::Heading { level: 1, .. }
+        ));
+        assert!(matches!(&blocks[1].kind, SpecBlockKind::Rule { .. }));
+    }
+
+    // ── multi-paragraph blockquote rule ──────────────────────────────────────
+    //
+    // This is the core regression: a rule whose body spans multiple blockquote
+    // paragraphs (separated by `>` blank lines) must produce exactly ONE Rule
+    // block containing all paragraphs, not one Rule + loose Paragraph blocks.
+
+    const MULTI_PARA_RULE: &str = "\
+> r[iso.cdrom-partscan+4]
+> First paragraph of the rule, which is long enough
+> to be hard-wrapped across several lines.
+>
+> Second paragraph of the same rule.
+>
+> Third paragraph, still part of the same rule.
+";
+
+    #[test]
+    fn test_multi_para_rule_produces_one_block() {
+        let blocks = run(parse_blocks_from_content(MULTI_PARA_RULE));
+        assert_eq!(
+            blocks.len(),
+            1,
+            "expected 1 Rule block but got {}:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_multi_para_rule_kind_is_rule() {
+        let blocks = run(parse_blocks_from_content(MULTI_PARA_RULE));
+        assert!(
+            matches!(&blocks[0].kind, SpecBlockKind::Rule { .. }),
+            "block 0 should be a Rule, got {:?}",
+            blocks[0].kind
+        );
+    }
+
+    #[test]
+    fn test_multi_para_rule_id() {
+        let blocks = run(parse_blocks_from_content(MULTI_PARA_RULE));
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { id, .. } => assert_eq!(id, "iso.cdrom-partscan+4"),
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_multi_para_rule_text_contains_all_paragraphs() {
+        let blocks = run(parse_blocks_from_content(MULTI_PARA_RULE));
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(
+                    text.contains("First paragraph"),
+                    "text missing first para: {text:?}"
+                );
+                assert!(
+                    text.contains("Second paragraph"),
+                    "text missing second para: {text:?}"
+                );
+                assert!(
+                    text.contains("Third paragraph"),
+                    "text missing third para: {text:?}"
+                );
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    // ── rule with a code block ────────────────────────────────────────────────
+
+    const RULE_WITH_CODE: &str = "\
+> r[test.code]
+> Some prose before the code.
+>
+> ```rust
+> let foo = 123;
+> let bar = 456;
+> ```
+";
+
+    #[test]
+    fn test_rule_with_code_block_is_one_block() {
+        let blocks = run(parse_blocks_from_content(RULE_WITH_CODE));
+        assert_eq!(
+            blocks.len(),
+            1,
+            "expected 1 block, got {}:\n{blocks:#?}",
+            blocks.len()
+        );
+        assert!(matches!(&blocks[0].kind, SpecBlockKind::Rule { .. }));
+    }
+
+    #[test]
+    fn test_rule_with_code_block_text_has_fence() {
+        let blocks = run(parse_blocks_from_content(RULE_WITH_CODE));
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(
+                    text.contains("```"),
+                    "expected fenced code block in text, got: {text:?}"
+                );
+                assert!(
+                    text.contains("let foo = 123"),
+                    "expected code content in text, got: {text:?}"
+                );
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    // ── rule with a list ──────────────────────────────────────────────────────
+
+    const RULE_WITH_LIST: &str = "\
+> r[test.list]
+> The following items must be present:
+>
+> - **NVMe:** `nvme`, `nvme_core`
+> - **SATA/AHCI:** `ahci`
+> - **RAID controllers:** `megaraid_sas`, `mpt3sas`
+";
+
+    #[test]
+    fn test_rule_with_list_is_one_block() {
+        let blocks = run(parse_blocks_from_content(RULE_WITH_LIST));
+        assert_eq!(
+            blocks.len(),
+            1,
+            "expected 1 block, got {}:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_rule_with_list_text_contains_items() {
+        let blocks = run(parse_blocks_from_content(RULE_WITH_LIST));
+        match &blocks[0].kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(text.contains("NVMe"), "missing NVMe item: {text:?}");
+                assert!(text.contains("ahci"), "missing ahci item: {text:?}");
+                assert!(
+                    text.contains("megaraid_sas"),
+                    "missing megaraid_sas item: {text:?}"
+                );
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    // ── realistic in-context document ────────────────────────────────────────
+    //
+    // A multi-paragraph rule surrounded by normal single-paragraph rules and a
+    // heading — the structure that actually appears in production spec files.
+
+    const IN_CONTEXT_DOC: &str = "\
+# Live ISO
+
+r[iso.simple-rule]
+A simple single-paragraph rule before the multi-para one.
+
+> r[iso.cdrom-partscan+4]
+> When the ISO is booted as optical media (e.g. `/dev/sr0` in a VM), the
+> Linux kernel does not parse the GPT appended partitions because the CD-ROM
+> block device driver exposes the device as a single block device with an
+> ISO 9660 filesystem. As a result, partition device nodes are never created
+> and `/dev/disk/by-partuuid/` symlinks for the appended BESIMAGES and
+> BESCONF partitions do not appear.
+>
+> The installer must handle this transparently. When the well-known
+> PARTUUIDs are not present in `/dev/disk/by-partuuid/`, the installer
+> must identify the boot device, create a loop device with partition
+> scanning enabled.
+>
+> This must happen early in the installer's startup.
+
+r[iso.after-rule]
+A simple single-paragraph rule after the multi-para one.
+";
+
+    // Inspect raw marq elements — always passes, read with --nocapture.
+    #[test]
+    fn test_inspect_marq_elements_in_context() {
+        use marq::{DocElement, RenderOptions, render};
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let doc = rt
+            .block_on(render(IN_CONTEXT_DOC, &RenderOptions::new()))
+            .expect("marq render failed");
+
+        println!(
+            "\n=== marq elements for IN_CONTEXT_DOC ({} total) ===",
+            doc.elements.len()
+        );
+        for (i, el) in doc.elements.iter().enumerate() {
+            match el {
+                DocElement::Heading(h) => {
+                    println!("  [{i}] Heading(level={}, title={:?})", h.level, h.title);
+                }
+                DocElement::Req(r) => {
+                    println!(
+                        "  [{i}] Req(id={}, raw_lines={}, raw_bytes={})",
+                        r.id,
+                        r.raw.lines().count(),
+                        r.raw.len(),
+                    );
+                    println!("       raw = {:?}", r.raw);
+                }
+                DocElement::Paragraph(p) => {
+                    println!("  [{i}] Paragraph(offset={})", p.offset);
+                    let start = p.offset.min(IN_CONTEXT_DOC.len());
+                    let rest = &IN_CONTEXT_DOC[start..];
+                    let end = rest.find("\n\n").unwrap_or(rest.len());
+                    println!("       source_slice = {:?}", &rest[..end.min(120)]);
+                }
+            }
+        }
+        println!("=== end ===\n");
+    }
+
+    // The parsed blocks from the in-context document should be exactly:
+    //   Heading, Rule(simple), Rule(cdrom-partscan+4), Rule(after)
+    // — no stray Paragraph blocks from the inner paragraphs of the multi-para rule.
+
+    #[test]
+    fn test_in_context_block_count() {
+        let blocks = run(parse_blocks_from_content(IN_CONTEXT_DOC));
+        println!(
+            "\n=== parse_blocks_from_content result ({} blocks) ===",
+            blocks.len()
+        );
+        for (i, b) in blocks.iter().enumerate() {
+            match &b.kind {
+                SpecBlockKind::Heading { level, text, .. } => {
+                    println!("  [{i}] Heading(level={level}, text={text:?})")
+                }
+                SpecBlockKind::Rule { id, text } => println!(
+                    "  [{i}] Rule(id={id:?}, text_lines={})",
+                    text.lines().count()
+                ),
+                SpecBlockKind::Paragraph { text } => {
+                    println!("  [{i}] Paragraph(text={:?})", &text[..text.len().min(60)])
+                }
+            }
+        }
+        println!("=== end ===\n");
+        assert_eq!(
+            blocks.len(),
+            4,
+            "expected Heading + 3 Rules, got {} blocks:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_in_context_cdrom_rule_has_all_paragraphs() {
+        let blocks = run(parse_blocks_from_content(IN_CONTEXT_DOC));
+        let cdrom = blocks.iter().find(
+            |b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "iso.cdrom-partscan+4"),
+        );
+        let cdrom = cdrom.expect("iso.cdrom-partscan+4 rule not found in blocks");
+        match &cdrom.kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(
+                    text.contains("optical media"),
+                    "missing first para: {text:?}"
+                );
+                assert!(
+                    text.contains("handle this transparently"),
+                    "missing second para: {text:?}"
+                );
+                assert!(
+                    text.contains("early in the installer"),
+                    "missing third para: {text:?}"
+                );
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    // ── inspect raw marq elements for standalone multi-para rule ─────────────
+    //
+    // Always passes — read the output with `cargo test -- --nocapture`.
+
+    // ── exact real-file content regression test ───────────────────────────────
+    //
+    // This is the verbatim section from beyondessential/linux-images
+    // docs/spec/live-iso.md that the user reported as broken.  The blank
+    // continuation lines inside the blockquote use bare `>` (no trailing space),
+    // exactly as they appear in the source file.
+
+    const REAL_CDROM_SECTION: &str = "\
+## CD-ROM Partition Scanning
+
+> r[iso.cdrom-partscan+4]
+> When the ISO is booted as optical media (e.g. `/dev/sr0` in a VM), the
+> Linux kernel does not parse the GPT appended partitions because the CD-ROM
+> block device driver exposes the device as a single block device with an
+> ISO 9660 filesystem. As a result, partition device nodes are never created
+> and `/dev/disk/by-partuuid/` symlinks for the appended BESIMAGES and
+> BESCONF partitions do not appear.
+>
+> The installer must handle this transparently. When the well-known
+> PARTUUIDs are not present in `/dev/disk/by-partuuid/`, the installer
+> must identify the boot device, create a loop device with partition
+> scanning enabled, and trigger a udev settle so that the kernel creates
+> partition device nodes and udev populates `/dev/disk/by-partuuid/` with
+> the well-known PARTUUIDs. Boot device detection must work even when
+> `toram` is active (where `/run/live/medium` is backed by tmpfs).
+>
+> This must happen early in the installer's startup, before any attempt to
+> mount BESCONF or open the images partition. The installer must detach the
+> loop device on exit. On USB boot, the PARTUUIDs are already visible and
+> this step is a no-op.
+";
+
+    // Inspect what marq emits for the real content — always passes, read with --nocapture.
+    #[test]
+    fn test_inspect_real_cdrom_marq_elements() {
+        use marq::{DocElement, RenderOptions, render};
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let doc = rt
+            .block_on(render(REAL_CDROM_SECTION, &RenderOptions::new()))
+            .expect("marq render failed");
+        println!(
+            "\n=== marq elements for REAL_CDROM_SECTION ({} total) ===",
+            doc.elements.len()
+        );
+        for (i, el) in doc.elements.iter().enumerate() {
+            match el {
+                DocElement::Heading(h) => println!("  [{i}] Heading({:?})", h.title),
+                DocElement::Req(r) => {
+                    println!(
+                        "  [{i}] Req(id={}, raw_lines={}, raw_bytes={})",
+                        r.id,
+                        r.raw.lines().count(),
+                        r.raw.len()
+                    );
+                    println!("       raw = {:?}", &r.raw[..r.raw.len().min(200)]);
+                }
+                DocElement::Paragraph(p) => {
+                    let start = p.offset.min(REAL_CDROM_SECTION.len());
+                    let rest = &REAL_CDROM_SECTION[start..];
+                    let end = rest.find("\n\n").unwrap_or(rest.len());
+                    println!(
+                        "  [{i}] Paragraph(offset={}) source={:?}",
+                        p.offset,
+                        &rest[..end.min(80)]
+                    );
+                }
+            }
+        }
+        println!("=== end ===\n");
+    }
+
+    #[test]
+    fn test_real_cdrom_produces_one_rule_block() {
+        let blocks = run(parse_blocks_from_content(REAL_CDROM_SECTION));
+        println!("\n=== parse_blocks_from_content for REAL_CDROM_SECTION ===");
+        for (i, b) in blocks.iter().enumerate() {
+            match &b.kind {
+                SpecBlockKind::Heading { level, text, .. } => {
+                    println!("  [{i}] Heading({level}, {text:?})")
+                }
+                SpecBlockKind::Rule { id, text } => println!(
+                    "  [{i}] Rule({id:?}, {} lines, first 80: {:?})",
+                    text.lines().count(),
+                    &text[..text.len().min(80)]
+                ),
+                SpecBlockKind::Paragraph { text } => {
+                    println!("  [{i}] Paragraph({:?})", &text[..text.len().min(80)])
+                }
+            }
+        }
+        println!("=== end ===\n");
+        // Heading + one Rule only — no stray Paragraph blocks for the inner paragraphs
+        assert_eq!(
+            blocks.len(),
+            2,
+            "expected Heading + 1 Rule, got {} blocks:\n{blocks:#?}",
+            blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_real_cdrom_rule_text_has_all_paragraphs() {
+        let blocks = run(parse_blocks_from_content(REAL_CDROM_SECTION));
+        let rule = blocks.iter().find(
+            |b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "iso.cdrom-partscan+4")
+        ).expect("iso.cdrom-partscan+4 not found");
+        match &rule.kind {
+            SpecBlockKind::Rule { text, .. } => {
+                assert!(text.contains("optical media"), "missing para 1: {text:?}");
+                assert!(
+                    text.contains("handle this transparently"),
+                    "missing para 2: {text:?}"
+                );
+                assert!(
+                    text.contains("early in the installer"),
+                    "missing para 3: {text:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_inspect_marq_elements_for_multi_para_rule() {
+        use marq::{DocElement, RenderOptions, render};
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let doc = rt
+            .block_on(render(MULTI_PARA_RULE, &RenderOptions::new()))
+            .expect("marq render failed");
+
+        println!(
+            "\n=== marq elements for MULTI_PARA_RULE ({} total) ===",
+            doc.elements.len()
+        );
+        for (i, el) in doc.elements.iter().enumerate() {
+            match el {
+                DocElement::Heading(h) => {
+                    println!("  [{i}] Heading(level={}, title={:?})", h.level, h.title);
+                }
+                DocElement::Req(r) => {
+                    println!(
+                        "  [{i}] Req(id={}, raw_lines={}, raw_bytes={})",
+                        r.id,
+                        r.raw.lines().count(),
+                        r.raw.len(),
+                    );
+                    println!("       raw = {:?}", r.raw);
+                }
+                DocElement::Paragraph(p) => {
+                    println!("  [{i}] Paragraph(offset={})", p.offset);
+                    let start = p.offset.min(MULTI_PARA_RULE.len());
+                    let rest = &MULTI_PARA_RULE[start..];
+                    let end = rest.find("\n\n").unwrap_or(rest.len());
+                    println!("       source_slice = {:?}", &rest[..end]);
+                }
+            }
+        }
+        println!("=== end ===\n");
+    }
 }
 
 pub fn html_escape(s: &str) -> String {
@@ -572,7 +1094,7 @@ pub fn SpecBlockEditor(
                         use marq::{RenderOptions, render};
                         let raw = match &block.kind {
                             SpecBlockKind::Rule { id, text } => {
-                                format!("r[{}]\n{}\n\n", id, text)
+                                crate::components::loro_doc::rule_to_markdown(id, text)
                             }
                             SpecBlockKind::Paragraph { text } if !text.is_empty() => {
                                 format!("{}\n\n", text)
@@ -811,7 +1333,7 @@ pub fn SpecBlockEditor(
                 let raw = blocks_out.with_untracked(|list| {
                     list.iter().find(|b| b.key == key).map(|b| match &b.kind {
                         SpecBlockKind::Rule { id, .. } => {
-                            format!("r[{}]\n{}\n\n", id, text)
+                            crate::components::loro_doc::rule_to_markdown(id, &text)
                         }
                         SpecBlockKind::Heading { level, .. } => {
                             format!("{} {}\n\n", "#".repeat(*level as usize), text)
