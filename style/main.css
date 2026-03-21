@@ -7,6 +7,13 @@ html {
 /* Requirement annotations — visually insignificant per r[view.render] */
 .req {
     position: relative;
+    padding: 0.75rem 0 0.75rem 1rem;
+    margin: 0.75rem 0;
+    border-left: 2px solid #ededed;
+}
+
+.req + .req {
+    border-top: 1px solid #f5f5f5;
 }
 
 .req-link {
