@@ -546,9 +546,25 @@ pub fn SpecBlockEditor(
                     loro_doc.with_value(|doc| {
                         if !remote.is_empty() {
                             doc.import(&remote).ok();
+                            // Rebuild blocks from the updated doc, but carry forward
+                            // any HTML that was already marq-rendered so it is never
+                            // clobbered by the inline stubs from loro_doc_to_blocks.
+                            let mut new_blocks =
+                                crate::components::loro_doc::loro_doc_to_blocks(doc);
+                            let prev_html: std::collections::HashMap<String, String> = blocks_out
+                                .with_untracked(|list| {
+                                    list.iter()
+                                        .filter(|b| !b.html.is_empty())
+                                        .map(|b| (b.key.clone(), b.html.clone()))
+                                        .collect()
+                                });
+                            for b in &mut new_blocks {
+                                if let Some(html) = prev_html.get(&b.key) {
+                                    b.html = html.clone();
+                                }
+                            }
+                            blocks_out.set(new_blocks);
                         }
-                        let blocks = crate::components::loro_doc::loro_doc_to_blocks(doc);
-                        blocks_out.set(blocks);
                         synced_vv.set(crate::components::loro_doc::encode_vv(doc));
                     });
                     sync_error.set(None);
@@ -1074,8 +1090,7 @@ pub fn SpecBlockEditor(
                                 when=is_editing
                                 fallback=move || {
                                     let html = block_html();
-                                    let text = block_text();
-                                    let is_empty = html.is_empty() && text.is_empty();
+                                    let is_empty = html.is_empty();
                                     view! {
                                         // r[impl edit.rule-text]
                                         <div
@@ -1091,8 +1106,6 @@ pub fn SpecBlockEditor(
                                                     <div class="content" inner_html=html />
                                                 }
                                                 .into_any()
-                                            } else if !text.is_empty() {
-                                                view! { <span>{text}</span> }.into_any()
                                             } else {
                                                 view! {
                                                     <span class="spec-block-placeholder">
