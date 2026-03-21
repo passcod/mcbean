@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{HeadingEntry, SpecOutline, SpecSidebar};
+use crate::components::{HeadingEntry, SearchEntry, SpecOutline, SpecSidebar};
 
 #[cfg(feature = "ssr")]
 use tracing::info;
@@ -27,6 +27,7 @@ pub struct RenderedSpec {
     pub name: String,
     pub files: Vec<RenderedFile>,
     pub headings: Vec<HeadingEntry>,
+    pub search_entries: Vec<SearchEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -124,6 +125,7 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
     for (spec_id, spec_name, files) in grouped {
         let mut rendered_files = Vec::with_capacity(files.len());
         let mut headings: Vec<HeadingEntry> = Vec::new();
+        let mut search_entries: Vec<SearchEntry> = Vec::new();
 
         for (path, content) in files {
             let opts = RenderOptions::new().with_source_path(&path);
@@ -132,6 +134,7 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
                 tracing::error!(repo_id, %path, error = %e, "marq render failed");
                 ServerFnError::new(format!("Failed to render {path}: {e}"))
             })?;
+
             for h in &doc.headings {
                 headings.push(HeadingEntry {
                     level: h.level,
@@ -139,6 +142,47 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
                     anchor: h.id.clone(),
                 });
             }
+
+            // r[impl view.search]
+            // Walk elements in document order, tracking the nearest heading
+            // anchor so paragraph/req entries can link back to their section.
+            let mut current_anchor = String::new();
+            for element in &doc.elements {
+                use marq::DocElement;
+                match element {
+                    DocElement::Heading(h) => {
+                        current_anchor = h.id.clone();
+                        search_entries.push(SearchEntry {
+                            spec_name: spec_name.clone(),
+                            text: h.title.clone(),
+                            anchor: h.id.clone(),
+                        });
+                    }
+                    DocElement::Req(r) => {
+                        search_entries.push(SearchEntry {
+                            spec_name: spec_name.clone(),
+                            text: r.raw.clone(),
+                            anchor: r.anchor_id.clone(),
+                        });
+                    }
+                    DocElement::Paragraph(p) => {
+                        let start = p.offset;
+                        if start < content.len() {
+                            let rest = &content[start..];
+                            let end = rest.find("\n\n").unwrap_or(rest.len());
+                            let text = rest[..end].trim().to_string();
+                            if !text.is_empty() {
+                                search_entries.push(SearchEntry {
+                                    spec_name: spec_name.clone(),
+                                    text,
+                                    anchor: current_anchor.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             rendered_files.push(RenderedFile {
                 path,
                 html: doc.html,
@@ -149,6 +193,7 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
             name: spec_name,
             files: rendered_files,
             headings,
+            search_entries,
         });
     }
 
@@ -316,11 +361,15 @@ pub fn RepoPage() -> impl IntoView {
                                     headings: s.headings.clone(),
                                 })
                                 .collect();
+                            let all_search_entries: Vec<SearchEntry> = specs
+                                .iter()
+                                .flat_map(|s| s.search_entries.iter().cloned())
+                                .collect();
 
                             view! {
                                 // r[impl repo.multi-spec]
                                 <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
-                                    <SpecSidebar specs=outline />
+                                    <SpecSidebar outline=outline search_entries=all_search_entries />
                                     <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
                                         {specs.into_iter().map(|spec| {
                                             view! {
