@@ -1,9 +1,4 @@
-use diesel::backend::Backend;
-use diesel::deserialize::{self, FromSql, FromSqlRow};
-use diesel::expression::AsExpression;
 use diesel::prelude::*;
-use diesel::serialize::{self, Output, ToSql};
-use diesel::sql_types::Varchar;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -81,28 +76,23 @@ pub struct NewSpec {
 }
 
 #[derive(Debug, Queryable, Selectable, Serialize)]
-#[diesel(table_name = spec_files)]
+#[diesel(table_name = spec_snapshots)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
-pub struct SpecFile {
+pub struct SpecSnapshot {
     pub id: i32,
-    // r[impl repo.multi-file]
-    pub spec_id: i32,
-    pub path: String,
-    pub content: String,
+    pub repository_id: i32,
     pub commit_sha: String,
+    pub loro_bytes: Vec<u8>,
     #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
     pub created_at: Timestamp,
-    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
-    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
-#[diesel(table_name = spec_files)]
-pub struct NewSpecFile {
-    pub spec_id: i32,
-    pub path: String,
-    pub content: String,
+#[diesel(table_name = spec_snapshots)]
+pub struct NewSpecSnapshot {
+    pub repository_id: i32,
     pub commit_sha: String,
+    pub loro_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Queryable, Selectable, Serialize)]
@@ -123,6 +113,7 @@ pub struct Proposal {
     pub created_at: Timestamp,
     #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
     pub updated_at: Timestamp,
+    pub base_snapshot_id: Option<i32>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -136,66 +127,25 @@ pub struct NewProposal {
     pub created_by: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, AsExpression, FromSqlRow)]
-#[diesel(sql_type = Varchar)]
-pub enum ChangeType {
-    UserEdit,
-    LlmEdit,
-    Undo,
-}
-
-impl<DB: Backend> ToSql<Varchar, DB> for ChangeType
-where
-    str: ToSql<Varchar, DB>,
-{
-    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, DB>) -> serialize::Result {
-        let s = match self {
-            ChangeType::UserEdit => "user_edit",
-            ChangeType::LlmEdit => "llm_edit",
-            ChangeType::Undo => "undo",
-        };
-        s.to_sql(out)
-    }
-}
-
-impl<DB: Backend> FromSql<Varchar, DB> for ChangeType
-where
-    String: FromSql<Varchar, DB>,
-{
-    fn from_sql(bytes: DB::RawValue<'_>) -> deserialize::Result<Self> {
-        match String::from_sql(bytes)?.as_str() {
-            "user_edit" => Ok(ChangeType::UserEdit),
-            "llm_edit" => Ok(ChangeType::LlmEdit),
-            "undo" => Ok(ChangeType::Undo),
-            other => Err(format!("unknown change_type: {other}").into()),
-        }
-    }
-}
-
 #[derive(Debug, Queryable, Selectable, Serialize)]
-#[diesel(table_name = proposal_changes)]
+#[diesel(table_name = proposal_loro_updates)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
-pub struct ProposalChange {
+pub struct ProposalLoroUpdate {
     pub id: i32,
     pub proposal_id: i32,
-    // r[impl edit.history]
-    pub parent_change_id: Option<i32>,
     pub user_id: i32,
-    pub change_type: ChangeType,
-    pub llm_prompt: Option<String>,
-    // r[impl edit.history]
-    pub content_snapshot: String,
+    // Loro PeerID (u64) bitcast to i64 for BIGINT storage.
+    pub peer_id: i64,
+    pub update_bytes: Vec<u8>,
     #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
     pub created_at: Timestamp,
 }
 
-#[derive(Debug, Insertable, Deserialize)]
-#[diesel(table_name = proposal_changes)]
-pub struct NewProposalChange {
+#[derive(Debug, Insertable)]
+#[diesel(table_name = proposal_loro_updates)]
+pub struct NewProposalLoroUpdate {
     pub proposal_id: i32,
-    pub parent_change_id: Option<i32>,
     pub user_id: i32,
-    pub change_type: ChangeType,
-    pub llm_prompt: Option<String>,
-    pub content_snapshot: String,
+    pub peer_id: i64,
+    pub update_bytes: Vec<u8>,
 }

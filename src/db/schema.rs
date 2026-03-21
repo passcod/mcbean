@@ -1,14 +1,12 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
-    proposal_changes (id) {
+    proposal_loro_updates (id) {
         id -> Int4,
         proposal_id -> Int4,
-        parent_change_id -> Nullable<Int4>,
         user_id -> Int4,
-        change_type -> Varchar,
-        llm_prompt -> Nullable<Text>,
-        content_snapshot -> Text,
+        peer_id -> Int8,
+        update_bytes -> Bytea,
         created_at -> Timestamptz,
     }
 }
@@ -24,6 +22,7 @@ diesel::table! {
         created_by -> Int4,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        base_snapshot_id -> Nullable<Int4>,
     }
 }
 
@@ -42,14 +41,12 @@ diesel::table! {
 }
 
 diesel::table! {
-    spec_files (id) {
+    spec_snapshots (id) {
         id -> Int4,
-        spec_id -> Int4,
-        path -> Varchar,
-        content -> Text,
+        repository_id -> Int4,
         commit_sha -> Varchar,
+        loro_bytes -> Bytea,
         created_at -> Timestamptz,
-        updated_at -> Timestamptz,
     }
 }
 
@@ -73,18 +70,19 @@ diesel::table! {
     }
 }
 
-diesel::joinable!(proposal_changes -> proposals (proposal_id));
-diesel::joinable!(proposal_changes -> users (user_id));
+diesel::joinable!(proposal_loro_updates -> proposals (proposal_id));
+diesel::joinable!(proposal_loro_updates -> users (user_id));
 diesel::joinable!(proposals -> repositories (repository_id));
+diesel::joinable!(proposals -> spec_snapshots (base_snapshot_id));
 diesel::joinable!(proposals -> users (created_by));
-diesel::joinable!(spec_files -> specs (spec_id));
+diesel::joinable!(spec_snapshots -> repositories (repository_id));
 diesel::joinable!(specs -> repositories (repository_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
-    proposal_changes,
+    proposal_loro_updates,
     proposals,
     repositories,
-    spec_files,
+    spec_snapshots,
     specs,
     users,
 );

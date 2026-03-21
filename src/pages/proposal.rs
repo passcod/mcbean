@@ -53,16 +53,11 @@ pub async fn get_proposal(proposal_id: i32) -> Result<ProposalDetail, ServerFnEr
 }
 
 // r[impl edit.availability]
-// r[impl edit.rule-text]
-// r[impl edit.add-rule]
-// r[impl edit.add-section]
-// r[impl edit.reorder]
-// r[impl edit.delete]
 #[server]
 pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, ServerFnError> {
     use diesel::prelude::*;
 
-    use crate::components::spec_block_editor::parse_blocks_from_content;
+    use crate::components::loro_doc::{loro_doc_to_blocks, reconstruct_doc};
 
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
@@ -71,54 +66,44 @@ pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, Ser
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
 
-    let (repository_id, latest_snapshot): (i32, Option<String>) = conn
+    let (base_bytes, update_rows) = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposal_changes, proposals};
+            use crate::db::schema::{proposal_loro_updates, proposals, spec_snapshots};
 
-            let repo_id: i32 = proposals::table
+            let base_snapshot_id: Option<i32> = proposals::table
                 .find(proposal_id)
-                .select(proposals::repository_id)
+                .select(proposals::base_snapshot_id)
                 .first(conn)?;
 
-            // r[impl edit.history]
-            // The latest change's snapshot is the current content of the proposal.
-            let snapshot: Option<String> = proposal_changes::table
-                .filter(proposal_changes::proposal_id.eq(proposal_id))
-                .order(proposal_changes::id.desc())
-                .select(proposal_changes::content_snapshot)
-                .first(conn)
-                .optional()?;
+            let Some(sid) = base_snapshot_id else {
+                return Ok::<_, diesel::result::Error>((Vec::new(), Vec::new()));
+            };
 
-            Ok::<_, diesel::result::Error>((repo_id, snapshot))
-        })
-        .await
-        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
-        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query error: {e}")))?;
+            let base_bytes: Vec<u8> = spec_snapshots::table
+                .find(sid)
+                .select(spec_snapshots::loro_bytes)
+                .first(conn)?;
 
-    let content = if let Some(snapshot) = latest_snapshot {
-        snapshot
-    } else {
-        // No edits recorded yet — serve the base spec from the main branch.
-        // r[impl repo.multi-spec]
-        // r[impl repo.multi-file]
-        conn.interact(move |conn| {
-            use crate::db::schema::{spec_files, specs};
-
-            let contents: Vec<String> = spec_files::table
-                .inner_join(specs::table)
-                .filter(specs::repository_id.eq(repository_id))
-                .order((specs::name.asc(), spec_files::path.asc()))
-                .select(spec_files::content)
+            let update_rows: Vec<Vec<u8>> = proposal_loro_updates::table
+                .filter(proposal_loro_updates::proposal_id.eq(proposal_id))
+                .order(proposal_loro_updates::id.asc())
+                .select(proposal_loro_updates::update_bytes)
                 .load(conn)?;
 
-            Ok::<_, diesel::result::Error>(contents.join("\n\n"))
+            Ok((base_bytes, update_rows))
         })
         .await
-        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
-        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query error: {e}")))?
-    };
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
 
-    Ok(parse_blocks_from_content(&content).await)
+    if base_bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let doc = reconstruct_doc(&base_bytes, &update_rows)
+        .map_err(|e| ServerFnError::new(format!("reconstruct: {e}")))?;
+
+    Ok(loro_doc_to_blocks(&doc))
 }
 
 // r[impl proposal.diff.semantic]
@@ -126,7 +111,7 @@ pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, Ser
 pub async fn get_base_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, ServerFnError> {
     use diesel::prelude::*;
 
-    use crate::components::spec_block_editor::parse_blocks_from_content;
+    use crate::components::loro_doc::loro_doc_to_blocks;
 
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
@@ -135,31 +120,36 @@ pub async fn get_base_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, ServerF
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
 
-    let content = conn
+    let base_bytes: Vec<u8> = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposals, spec_files, specs};
+            use crate::db::schema::{proposals, spec_snapshots};
 
-            // r[impl repo.multi-spec]
-            // r[impl repo.multi-file]
-            let repository_id: i32 = proposals::table
+            let base_snapshot_id: Option<i32> = proposals::table
                 .find(proposal_id)
-                .select(proposals::repository_id)
+                .select(proposals::base_snapshot_id)
                 .first(conn)?;
 
-            let contents: Vec<String> = spec_files::table
-                .inner_join(specs::table)
-                .filter(specs::repository_id.eq(repository_id))
-                .order((specs::name.asc(), spec_files::path.asc()))
-                .select(spec_files::content)
-                .load(conn)?;
+            let Some(sid) = base_snapshot_id else {
+                return Ok::<_, diesel::result::Error>(Vec::new());
+            };
 
-            Ok::<_, diesel::result::Error>(contents.join("\n\n"))
+            spec_snapshots::table
+                .find(sid)
+                .select(spec_snapshots::loro_bytes)
+                .first(conn)
         })
         .await
-        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
-        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query error: {e}")))?;
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
 
-    Ok(parse_blocks_from_content(&content).await)
+    if base_bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let doc = loro::LoroDoc::new();
+    doc.import(&base_bytes)
+        .map_err(|e| ServerFnError::new(format!("loro import: {e}")))?;
+    Ok(loro_doc_to_blocks(&doc))
 }
 
 #[server]
@@ -407,51 +397,47 @@ pub fn ProposalPage() -> impl IntoView {
                                         blocks_resource
                                             .get()
                                             .map(|result: Result<Vec<SpecBlock>, _>| match result {
-                                                Ok(blocks) if is_drafting => {
-                                                                    // r[impl edit.rule-text]
-                                                                    // r[impl edit.add-rule]
-                                                                    // r[impl edit.add-section]
-                                                                    // r[impl edit.reorder]
-                                                                    // r[impl edit.delete]
-                                                                    let Some(base_result) =
-                                                                        base_blocks_resource.get()
-                                                                    else {
-                                                                        return view! {
-                                                                            <p class="has-text-grey">
-                                                                                "Loading\u{2026}"
-                                                                            </p>
-                                                                        }
-                                                                        .into_any();
-                                                                    };
-                                                                    let initial_blocks =
-                                                                        base_result.unwrap_or_else(
-                                                                            |_| blocks.clone(),
-                                                                        );
-                                                                    let blocks_signal =
-                                                                        RwSignal::new(blocks);
-                                                                    let (outline, search_entries) =
-                                                                        blocks_to_sidebar_data(
-                                                                            &blocks_signal.get_untracked(),
-                                                                            &sidebar_title,
-                                                                        );
-                                                                    view! {
-                                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
-                                                                            <SpecSidebar outline=outline search_entries=search_entries />
-                                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
-                                                                                <SpecBlockEditor
-                                                                                    blocks_signal=blocks_signal
-                                                                                    proposal_id=p.id
-                                                                                />
-                                                                            </div>
-                                                                            // r[impl proposal.diff.semantic]
-                                                                            <ChangelogSidebar
-                                                                                initial_blocks=initial_blocks
-                                                                                blocks=Signal::from(blocks_signal)
-                                                                            />
-                                                                        </div>
-                                                                    }
-                                                                    .into_any()
+                                                Ok(_) if is_drafting => {
+                                                    // r[impl edit.rule-text]
+                                                    // r[impl edit.add-rule]
+                                                    // r[impl edit.add-section]
+                                                    // r[impl edit.reorder]
+                                                    // r[impl edit.delete]
+                                                    let blocks_out = RwSignal::new(Vec::<SpecBlock>::new());
+                                                    let sidebar_title_clone = sidebar_title.clone();
+                                                    view! {
+                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+                                                            {move || {
+                                                                let blocks = blocks_out.get();
+                                                                let (outline, search_entries) = blocks_to_sidebar_data(&blocks, &sidebar_title_clone);
+                                                                view! {
+                                                                    <SpecSidebar outline=outline search_entries=search_entries />
                                                                 }
+                                                            }}
+                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                                                                <SpecBlockEditor
+                                                                    proposal_id=p.id
+                                                                    blocks_out=blocks_out
+                                                                />
+                                                            </div>
+                                                            // r[impl proposal.diff.semantic]
+                                                            <Suspense fallback=|| view! { <span /> }>
+                                                                {move || {
+                                                                    base_blocks_resource.get().map(|result| {
+                                                                        let initial = result.unwrap_or_default();
+                                                                        view! {
+                                                                            <ChangelogSidebar
+                                                                                initial_blocks=initial
+                                                                                blocks=Signal::from(blocks_out)
+                                                                            />
+                                                                        }
+                                                                    })
+                                                                }}
+                                                            </Suspense>
+                                                        </div>
+                                                    }
+                                                    .into_any()
+                                                }
                                                                 Ok(blocks) => {
                                                                     let title = sidebar_title.clone();
                                                                     let (outline, search_entries) =

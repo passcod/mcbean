@@ -223,7 +223,18 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
         ));
     }
 
-    // All validation passed — now persist to the database
+    // All validation passed — build the Loro snapshot before touching the DB
+    // (async: uses marq to parse each file's Markdown into the tree).
+    let doc = crate::components::loro_doc::build_doc_from_specs(&spec_files_by_spec).await;
+    let loro_bytes = doc
+        .export(loro::ExportMode::Snapshot)
+        .map_err(|e| ServerFnError::new(format!("loro export: {e}")))?;
+
+    let spec_names_for_db: Vec<String> = spec_files_by_spec
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
@@ -238,10 +249,10 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
 
     let result = conn
         .interact(move |conn| {
-            use crate::db::schema::{repositories, spec_files, specs};
+            use crate::db::schema::{repositories, spec_snapshots, specs};
 
             conn.transaction::<AddRepoResult, diesel::result::Error, _>(|conn| {
-                // Insert the repository
+                // Insert the repository.
                 let (rid, rurl, rowner, rname): (i32, String, String, String) =
                     diesel::insert_into(repositories::table)
                         .values((
@@ -266,32 +277,25 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
                     name: rname,
                 };
 
-                let mut spec_names = Vec::new();
-
-                // Insert specs and their files
-                for (spec_name, files) in &spec_files_by_spec {
-                    let (spec_id,): (i32,) = diesel::insert_into(specs::table)
+                // Insert spec name rows (used for navigation queries).
+                for spec_name in &spec_names_for_db {
+                    diesel::insert_into(specs::table)
                         .values((specs::repository_id.eq(rid), specs::name.eq(spec_name)))
-                        .returning((specs::id,))
-                        .get_result(conn)?;
-
-                    for (file_path, file_content) in files {
-                        diesel::insert_into(spec_files::table)
-                            .values((
-                                spec_files::spec_id.eq(spec_id),
-                                spec_files::path.eq(file_path),
-                                spec_files::content.eq(file_content),
-                                spec_files::commit_sha.eq(&commit_sha),
-                            ))
-                            .execute(conn)?;
-                    }
-
-                    spec_names.push(spec_name.clone());
+                        .execute(conn)?;
                 }
+
+                // Store the Loro snapshot for this commit SHA.
+                diesel::insert_into(spec_snapshots::table)
+                    .values((
+                        spec_snapshots::repository_id.eq(rid),
+                        spec_snapshots::commit_sha.eq(&commit_sha),
+                        spec_snapshots::loro_bytes.eq(&loro_bytes),
+                    ))
+                    .execute(conn)?;
 
                 Ok(AddRepoResult {
                     repo: repo_info,
-                    specs_found: spec_names,
+                    specs_found: spec_names_for_db.clone(),
                 })
             })
         })

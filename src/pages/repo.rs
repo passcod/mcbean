@@ -96,20 +96,27 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
 
     // r[impl repo.multi-spec]
     // r[impl repo.multi-file]
-    let raw: Vec<(i32, String, String, String)> = conn
+    // Load the latest Loro snapshot and the spec name→id mapping.
+    let (snapshot_bytes, spec_name_to_id) = conn
         .interact(move |conn| {
-            use crate::db::schema::{spec_files, specs};
-            specs::table
+            use crate::db::schema::{spec_snapshots, specs};
+
+            let bytes: Option<Vec<u8>> = spec_snapshots::table
+                .filter(spec_snapshots::repository_id.eq(repo_id))
+                .order(spec_snapshots::id.desc())
+                .select(spec_snapshots::loro_bytes)
+                .first(conn)
+                .optional()?;
+
+            let ids: Vec<(i32, String)> = specs::table
                 .filter(specs::repository_id.eq(repo_id))
-                .inner_join(spec_files::table)
-                .order((specs::name.asc(), spec_files::path.asc()))
-                .select((
-                    specs::id,
-                    specs::name,
-                    spec_files::path,
-                    spec_files::content,
-                ))
-                .load(conn)
+                .select((specs::id, specs::name))
+                .load(conn)?;
+
+            let id_map: std::collections::HashMap<String, i32> =
+                ids.into_iter().map(|(id, name)| (name, id)).collect();
+
+            Ok::<_, diesel::result::Error>((bytes, id_map))
         })
         .await
         .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
@@ -118,17 +125,52 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
             ServerFnError::new(format!("query error: {e}"))
         })?;
 
-    // Group consecutive rows by spec (query is ordered by spec name).
+    let Some(bytes) = snapshot_bytes else {
+        return Ok(Vec::new());
+    };
+
+    // Import the Loro snapshot and extract per-spec file Markdown.
+    let doc = loro::LoroDoc::new();
+    doc.import(&bytes)
+        .map_err(|e| ServerFnError::new(format!("loro import: {e}")))?;
+
+    // doc_to_markdown_files returns all (path, content) pairs across all specs.
+    let all_files: std::collections::HashMap<String, String> =
+        crate::components::loro_doc::doc_to_markdown_files(&doc)
+            .into_iter()
+            .collect();
+
+    // Walk the tree to recover spec→files grouping.
+    let tree = doc.get_tree(crate::components::loro_doc::TREE_NAME);
     type GroupedSpec = (i32, String, Vec<(String, String)>);
     let mut grouped: Vec<GroupedSpec> = Vec::new();
-    for (spec_id, spec_name, file_path, file_content) in raw {
-        if let Some(last) = grouped.last_mut()
-            && last.0 == spec_id
-        {
-            last.2.push((file_path, file_content));
+
+    for spec_node in tree.children(loro::TreeParentId::Root).unwrap_or_default() {
+        let Ok(meta) = tree.get_meta(spec_node) else {
             continue;
+        };
+        let spec_name = match meta.get("name") {
+            Some(loro::ValueOrContainer::Value(loro::LoroValue::String(s))) => s.to_string(),
+            _ => continue,
+        };
+        let spec_id = *spec_name_to_id.get(&spec_name).unwrap_or(&0);
+        let mut files = Vec::new();
+        for file_node in tree
+            .children(loro::TreeParentId::Node(spec_node))
+            .unwrap_or_default()
+        {
+            let Ok(fmeta) = tree.get_meta(file_node) else {
+                continue;
+            };
+            let path = match fmeta.get("path") {
+                Some(loro::ValueOrContainer::Value(loro::LoroValue::String(s))) => s.to_string(),
+                _ => continue,
+            };
+            if let Some(content) = all_files.get(&path) {
+                files.push((path, content.clone()));
+            }
         }
-        grouped.push((spec_id, spec_name, vec![(file_path, file_content)]));
+        grouped.push((spec_id, spec_name, files));
     }
 
     let mut result = Vec::with_capacity(grouped.len());
@@ -246,15 +288,15 @@ pub async fn get_user_open_proposal(
 
     let result = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposal_changes, proposals};
+            use crate::db::schema::{proposal_loro_updates, proposals};
 
             // All open proposals for this repo where the user is the creator
-            // or has authored at least one change.
+            // or has authored at least one Loro update.
             let row = proposals::table
                 .left_join(
-                    proposal_changes::table.on(proposal_changes::proposal_id
+                    proposal_loro_updates::table.on(proposal_loro_updates::proposal_id
                         .eq(proposals::id)
-                        .and(proposal_changes::user_id.eq(user_id))),
+                        .and(proposal_loro_updates::user_id.eq(user_id))),
                 )
                 .filter(proposals::repository_id.eq(repo_id))
                 .filter(
@@ -265,7 +307,7 @@ pub async fn get_user_open_proposal(
                 .filter(
                     proposals::created_by
                         .eq(user_id)
-                        .or(proposal_changes::user_id.eq(user_id)),
+                        .or(proposal_loro_updates::user_id.eq(user_id)),
                 )
                 .order(proposals::id.desc())
                 .select((proposals::id, proposals::title, proposals::status))

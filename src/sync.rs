@@ -3,6 +3,7 @@ use std::time::Duration;
 use diesel::prelude::*;
 use tracing::{error, info, warn};
 
+use crate::components::loro_doc::build_doc_from_specs;
 use crate::db::DbPool;
 use crate::github::GitHubClient;
 
@@ -91,7 +92,44 @@ async fn sync_repo(
         "spec sync: repo has new commits, re-fetching specs"
     );
 
-    // Fetch and parse tracey config
+    // Check whether we already have a snapshot for this exact commit SHA.
+    // This can happen if the sync task runs twice before the repo advances.
+    {
+        let conn = pool.get().await?;
+        let sha = head_sha.clone();
+        let already_stored: bool = conn
+            .interact(move |conn| {
+                use crate::db::schema::spec_snapshots::dsl::*;
+                let count: i64 = spec_snapshots
+                    .filter(repository_id.eq(repo_id))
+                    .filter(commit_sha.eq(&sha))
+                    .count()
+                    .get_result(conn)?;
+                Ok::<_, diesel::result::Error>(count > 0)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+            .map_err(|e: diesel::result::Error| anyhow::anyhow!("query error: {e}"))?;
+
+        if already_stored {
+            info!(repo_id, %head_sha, "spec sync: snapshot already stored for this SHA");
+            // Still update last_synced_sha so we skip next time.
+            let conn = pool.get().await?;
+            let sha = head_sha.clone();
+            conn.interact(move |conn| {
+                use crate::db::schema::repositories::dsl::*;
+                diesel::update(repositories.filter(id.eq(repo_id)))
+                    .set(last_synced_sha.eq(&sha))
+                    .execute(conn)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+            .map_err(|e: diesel::result::Error| anyhow::anyhow!("update error: {e}"))?;
+            return Ok(());
+        }
+    }
+
+    // Fetch and parse tracey config.
     let config_content = match github
         .get_file_contents(owner, name, ".config/tracey/config.styx", branch)
         .await
@@ -115,8 +153,9 @@ async fn sync_repo(
         return Ok(());
     }
 
-    // Resolve include patterns and fetch file contents for each spec
-    let mut spec_files_by_spec: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    // Resolve include patterns and fetch file contents for each spec.
+    // Build a list of (spec_name, [(file_path, file_content)]) for the Loro builder.
+    let mut specs_with_files: Vec<(String, Vec<(String, String)>)> = Vec::new();
 
     for spec_def in &config.specs {
         let fetched = github
@@ -132,20 +171,34 @@ async fn sync_repo(
 
         let files: Vec<(String, String)> =
             fetched.into_iter().map(|f| (f.path, f.content)).collect();
-        spec_files_by_spec.push((spec_def.name.clone(), files));
+
+        specs_with_files.push((spec_def.name.clone(), files));
     }
 
-    // Update database in a transaction
+    // Build the Loro doc from all specs and export as a snapshot.
+    let doc = build_doc_from_specs(&specs_with_files).await;
+    let loro_bytes = doc
+        .export(loro::ExportMode::Snapshot)
+        .map_err(|e| anyhow::anyhow!("loro export failed: {e}"))?;
+
+    info!(
+        repo_id,
+        %head_sha,
+        snapshot_bytes = loro_bytes.len(),
+        "spec sync: built Loro snapshot"
+    );
+
+    // Persist everything in a single transaction.
     let conn = pool.get().await?;
     let sha = head_sha.clone();
+    let spec_names: Vec<String> = specs_with_files.iter().map(|(n, _)| n.clone()).collect();
 
     conn.interact(move |conn| {
-        use crate::db::schema::{repositories, spec_files, specs};
+        use crate::db::schema::{repositories, spec_snapshots, specs};
 
         conn.transaction::<(), diesel::result::Error, _>(|conn| {
-            // Upsert each spec and its files
-            for (spec_name, files) in &spec_files_by_spec {
-                // Find or create the spec
+            // Upsert spec name rows (kept for navigation queries).
+            for spec_name in &spec_names {
                 let existing: Option<i32> = specs::table
                     .filter(specs::repository_id.eq(repo_id))
                     .filter(specs::name.eq(spec_name))
@@ -153,40 +206,22 @@ async fn sync_repo(
                     .first(conn)
                     .optional()?;
 
-                let spec_id = match existing {
-                    Some(sid) => {
-                        diesel::update(specs::table.filter(specs::id.eq(sid)))
-                            .set(specs::updated_at.eq(diesel::dsl::now))
-                            .execute(conn)?;
-                        sid
-                    }
-                    None => {
-                        let (sid,): (i32,) = diesel::insert_into(specs::table)
-                            .values((specs::repository_id.eq(repo_id), specs::name.eq(spec_name)))
-                            .returning((specs::id,))
-                            .get_result(conn)?;
-                        sid
-                    }
-                };
-
-                // Delete old files and insert fresh ones
-                diesel::delete(spec_files::table.filter(spec_files::spec_id.eq(spec_id)))
-                    .execute(conn)?;
-
-                for (file_path, file_content) in files {
-                    diesel::insert_into(spec_files::table)
-                        .values((
-                            spec_files::spec_id.eq(spec_id),
-                            spec_files::path.eq(file_path),
-                            spec_files::content.eq(file_content),
-                            spec_files::commit_sha.eq(&sha),
-                        ))
+                if existing.is_none() {
+                    diesel::insert_into(specs::table)
+                        .values((specs::repository_id.eq(repo_id), specs::name.eq(spec_name)))
                         .execute(conn)?;
+                } else {
+                    diesel::update(
+                        specs::table
+                            .filter(specs::repository_id.eq(repo_id))
+                            .filter(specs::name.eq(spec_name)),
+                    )
+                    .set(specs::updated_at.eq(diesel::dsl::now))
+                    .execute(conn)?;
                 }
             }
 
-            // Remove specs that no longer exist in the config
-            let spec_names: Vec<&String> = spec_files_by_spec.iter().map(|(n, _)| n).collect();
+            // Remove specs that no longer exist in the config.
             diesel::delete(
                 specs::table
                     .filter(specs::repository_id.eq(repo_id))
@@ -194,7 +229,19 @@ async fn sync_repo(
             )
             .execute(conn)?;
 
-            // Update the synced SHA
+            // Insert the new snapshot (unique constraint on repository_id + commit_sha
+            // prevents duplicates if two sync cycles race).
+            diesel::insert_into(spec_snapshots::table)
+                .values((
+                    spec_snapshots::repository_id.eq(repo_id),
+                    spec_snapshots::commit_sha.eq(&sha),
+                    spec_snapshots::loro_bytes.eq(&loro_bytes),
+                ))
+                .on_conflict((spec_snapshots::repository_id, spec_snapshots::commit_sha))
+                .do_nothing()
+                .execute(conn)?;
+
+            // Advance the synced SHA.
             diesel::update(repositories::table.filter(repositories::id.eq(repo_id)))
                 .set(repositories::last_synced_sha.eq(&sha))
                 .execute(conn)?;
