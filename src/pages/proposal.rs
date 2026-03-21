@@ -119,7 +119,7 @@ pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, Ser
 }
 
 // r[impl edit.history]
-#[server]
+#[server(input = server_fn::codec::Json)]
 pub async fn save_proposal_blocks(
     proposal_id: i32,
     blocks: Vec<SpecBlock>,
