@@ -199,7 +199,8 @@ pub fn SpecSidebar(outline: Vec<SpecOutline>, search_entries: Vec<SearchEntry>) 
                                                                font-size: 0.75rem; color: #4b5563; \
                                                                text-decoration: none; \
                                                                white-space: pre-wrap; \
-                                                               word-break: break-word;"
+                                                               word-break: break-word; \
+                                                               border-bottom: 1px solid #e5e7eb;"
                                                     >
                                                         {snippet}
                                                     </a>
