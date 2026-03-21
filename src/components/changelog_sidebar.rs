@@ -501,27 +501,6 @@ fn ChangelogEntryList(
                                 <span class="changelog-entry-label">
                                     {move || label.get_value()}
                                 </span>
-                                // r[impl edit.undo]
-                                <Show when=move || {
-                                    kind.get_value() != ChangeKind::VersionBump
-                                }>
-                                    <button
-                                        class="changelog-revert-btn"
-                                        title="Revert this change"
-                                        on:click=move |e| {
-                                            e.stop_propagation();
-                                            on_revert.run(ChangelogEntry {
-                                                key: key.get_value(),
-                                                kind: kind.get_value(),
-                                                label: label.get_value(),
-                                                old_text: old_text.get_value(),
-                                                new_text: new_text.get_value(),
-                                            });
-                                        }
-                                    >
-                                        "↩"
-                                    </button>
-                                </Show>
                                 <Show when=move || has_diff>
                                     <span class="changelog-expand-icon">
                                         {move || if is_expanded() { "▴" } else { "▾" }}
@@ -531,6 +510,25 @@ fn ChangelogEntryList(
 
                             // r[impl proposal.diff.expandable]
                             <Show when=move || is_expanded() && has_diff>
+                                // r[impl edit.undo]
+                                <Show when=move || {
+                                    kind.get_value() != ChangeKind::VersionBump
+                                }>
+                                    <button
+                                        class="changelog-revert-btn"
+                                        on:click=move |_| {
+                                            on_revert.run(ChangelogEntry {
+                                                key: key.get_value(),
+                                                kind: kind.get_value(),
+                                                label: label.get_value(),
+                                                old_text: old_text.get_value(),
+                                                new_text: new_text.get_value(),
+                                            });
+                                        }
+                                    >
+                                        "Revert"
+                                    </button>
+                                </Show>
                                 <div class="changelog-diff">
                                     {move || {
                                         let old = old_text.get_value();

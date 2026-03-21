@@ -510,25 +510,27 @@ html {
 /* ── Changelog per-entry revert button ────────────────────────────────────── */
 
 .changelog-revert-btn {
-    border: none;
-    background: none;
+    display: block;
+    margin: 0.25rem 0.75rem 0.5rem;
+    padding: 0.25rem 0.5rem;
+    box-sizing: border-box;
+    width: calc(100% - 1.5rem);
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    background: #fff;
     cursor: pointer;
-    font-size: 0.7rem;
-    color: #d1d5db;
-    padding: 0 3px;
-    line-height: 1;
-    flex-shrink: 0;
-    margin-left: auto;
-    opacity: 0;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #6b7280;
+    text-align: center;
     transition:
-        opacity 0.12s,
+        background 0.1s,
+        border-color 0.1s,
         color 0.1s;
 }
 
-.changelog-entry-header:hover .changelog-revert-btn {
-    opacity: 1;
-}
-
 .changelog-revert-btn:hover {
-    color: #3b82f6;
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #1d4ed8;
 }
