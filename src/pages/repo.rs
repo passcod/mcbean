@@ -125,9 +125,9 @@ pub fn RepoPage() -> impl IntoView {
             .unwrap_or(0)
     };
 
-    let repo = Resource::new(repo_id, |rid| get_repository(rid));
-    let specs_resource = Resource::new(repo_id, |rid| list_specs(rid));
-    let proposals_resource = Resource::new(repo_id, |rid| list_proposals(rid));
+    let repo = Resource::new(repo_id, get_repository);
+    let specs_resource = Resource::new(repo_id, list_specs);
+    let proposals_resource = Resource::new(repo_id, list_proposals);
 
     let (active_tab, set_active_tab) = signal("specs".to_string());
 
@@ -139,11 +139,14 @@ pub fn RepoPage() -> impl IntoView {
                 repo.get()
                     .map(|result| match result {
                         Ok(r) => {
+                            let label = format!("{}/{}", r.owner, r.name);
+                            let url_href = r.github_url.clone();
+                            let url_text = r.github_url;
                             view! {
-                                <h1 class="title">{format!("{}/{}", r.owner, r.name)}</h1>
+                                <h1 class="title">{label}</h1>
                                 <p class="subtitle">
-                                    <a href=r.github_url.clone() target="_blank">
-                                        {r.github_url}
+                                    <a href=url_href target="_blank">
+                                        {url_text}
                                     </a>
                                 </p>
                             }

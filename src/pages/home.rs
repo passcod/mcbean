@@ -141,16 +141,19 @@ pub fn HomePage() -> impl IntoView {
                                     <div class="columns is-multiline">
                                         {repos.into_iter().map(|repo| {
                                             let href = format!("/repo/{}", repo.id);
+                                            let url = repo.github_url;
+                                            let url_href = url.clone();
+                                            let label = format!("{}/{}", repo.owner, repo.name);
                                             view! {
                                                 <div class="column is-one-third">
                                                     <div class="card">
                                                         <div class="card-content">
                                                             <p class="title is-5">
-                                                                {format!("{}/{}", repo.owner, repo.name)}
+                                                                {label}
                                                             </p>
                                                             <p class="subtitle is-6">
-                                                                <a href={repo.github_url.clone()} target="_blank">
-                                                                    {repo.github_url}
+                                                                <a href={url_href} target="_blank">
+                                                                    {url}
                                                                 </a>
                                                             </p>
                                                         </div>

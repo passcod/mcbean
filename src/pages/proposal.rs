@@ -176,7 +176,7 @@ pub fn NewProposalPage() -> impl IntoView {
             .unwrap_or(0)
     };
 
-    let specs = Resource::new(move || repo_id(), |rid| list_specs_for_repo(rid));
+    let specs = Resource::new(repo_id, list_specs_for_repo);
 
     let title = RwSignal::new(String::new());
     let selected_spec = RwSignal::new(Option::<i32>::None);
@@ -280,7 +280,7 @@ pub fn ProposalPage() -> impl IntoView {
             .unwrap_or(0)
     };
 
-    let proposal = Resource::new(move || proposal_id(), |pid| get_proposal(pid));
+    let proposal = Resource::new(proposal_id, get_proposal);
 
     let editing_title = RwSignal::new(false);
     let title_draft = RwSignal::new(String::new());
@@ -407,13 +407,10 @@ pub fn ProposalPage() -> impl IntoView {
                                                             // TODO: save content changes via server function
                                                             editing_content.set(false);
                                                         })
+                                                        on_cancel=Callback::new(move |()| {
+                                                            editing_content.set(false);
+                                                        })
                                                     />
-                                                    <button
-                                                        class="button is-light mt-2"
-                                                        on:click=move |_| editing_content.set(false)
-                                                    >
-                                                        "Cancel"
-                                                    </button>
                                                 }
                                             }
                                         </Show>
