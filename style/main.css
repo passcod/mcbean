@@ -300,24 +300,19 @@ html {
 }
 
 .insert-bar-toggle {
-    width: 1.1rem;
-    height: 1.1rem;
     border: 1px dashed #d1d5db;
-    border-radius: 50%;
+    border-radius: 4px;
     background: #fff;
     color: #9ca3af;
-    font-size: 0.85rem;
+    font-size: 0.7rem;
     line-height: 1;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     transition:
         border-color 0.1s,
         color 0.1s,
         background 0.1s;
     flex-shrink: 0;
-    padding: 0;
+    padding: 0.1rem 0.45rem;
 }
 
 .insert-bar-toggle:hover,
