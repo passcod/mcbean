@@ -106,7 +106,6 @@ pub struct NewSpecFile {
 pub struct Proposal {
     pub id: i32,
     pub repository_id: i32,
-    pub spec_id: i32,
     pub title: Option<String>,
     // r[impl proposal.title.user-priority]
     pub title_is_user_supplied: bool,
@@ -125,7 +124,6 @@ pub struct Proposal {
 #[diesel(table_name = proposals)]
 pub struct NewProposal {
     pub repository_id: i32,
-    pub spec_id: i32,
     pub title: Option<String>,
     pub title_is_user_supplied: Option<bool>,
     pub branch_name: String,

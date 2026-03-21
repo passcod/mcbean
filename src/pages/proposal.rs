@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
+use leptos_router::hooks::{use_navigate, use_params_map};
 use serde::{Deserialize, Serialize};
 
 use crate::components::Editor;
@@ -8,18 +8,11 @@ use crate::components::Editor;
 pub struct ProposalDetail {
     pub id: i32,
     pub repository_id: i32,
-    pub spec_id: i32,
     pub title: Option<String>,
     pub status: String,
     // r[impl proposal.git.exposure]
     // branch_name deliberately excluded from client-facing DTO
     pub spec_content: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SpecSummary {
-    pub id: i32,
-    pub name: String,
 }
 
 #[server]
@@ -33,32 +26,33 @@ pub async fn get_proposal(proposal_id: i32) -> Result<ProposalDetail, ServerFnEr
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
     conn.interact(move |conn| {
-        use crate::db::schema::{proposals, spec_files};
+        use crate::db::schema::{proposals, spec_files, specs};
 
         let proposal = proposals::table
             .find(proposal_id)
             .select((
                 proposals::id,
                 proposals::repository_id,
-                proposals::spec_id,
                 proposals::title,
                 proposals::status,
             ))
-            .first::<(i32, i32, i32, Option<String>, String)>(conn)?;
+            .first::<(i32, i32, Option<String>, String)>(conn)?;
 
-        let content = spec_files::table
-            .filter(spec_files::spec_id.eq(proposal.2))
+        // r[impl repo.multi-spec]
+        // Load all spec files for the repository, ordered for stable display.
+        let contents: Vec<String> = spec_files::table
+            .inner_join(specs::table)
+            .filter(specs::repository_id.eq(proposal.1))
+            .order((specs::name.asc(), spec_files::path.asc()))
             .select(spec_files::content)
-            .first::<String>(conn)
-            .unwrap_or_default();
+            .load(conn)?;
 
         Ok(ProposalDetail {
             id: proposal.0,
             repository_id: proposal.1,
-            spec_id: proposal.2,
-            title: proposal.3,
-            status: proposal.4,
-            spec_content: content,
+            title: proposal.2,
+            status: proposal.3,
+            spec_content: contents.join("\n\n"),
         })
     })
     .await
@@ -67,11 +61,7 @@ pub async fn get_proposal(proposal_id: i32) -> Result<ProposalDetail, ServerFnEr
 }
 
 #[server]
-pub async fn create_proposal(
-    repo_id: i32,
-    spec_id: i32,
-    title: String,
-) -> Result<i32, ServerFnError> {
+pub async fn create_proposal(repo_id: i32, title: String) -> Result<i32, ServerFnError> {
     use diesel::prelude::*;
 
     // r[impl users.identity]
@@ -101,7 +91,6 @@ pub async fn create_proposal(
         diesel::insert_into(proposals::table)
             .values(&crate::db::models::NewProposal {
                 repository_id: repo_id,
-                spec_id,
                 title: title_val,
                 title_is_user_supplied: Some(title_is_user),
                 branch_name,
@@ -145,34 +134,6 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
-#[server]
-pub async fn list_specs_for_repo(repo_id: i32) -> Result<Vec<SpecSummary>, ServerFnError> {
-    use diesel::prelude::*;
-
-    let pool =
-        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-    conn.interact(move |conn| {
-        use crate::db::schema::specs;
-
-        specs::table
-            .filter(specs::repository_id.eq(repo_id))
-            .select((specs::id, specs::name))
-            .load::<(i32, String)>(conn)
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|(id, name)| SpecSummary { id, name })
-                    .collect()
-            })
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
-}
-
 #[component]
 pub fn NewProposalPage() -> impl IntoView {
     let params = use_params_map();
@@ -184,22 +145,12 @@ pub fn NewProposalPage() -> impl IntoView {
             .unwrap_or(0)
     };
 
-    let specs = Resource::new(repo_id, list_specs_for_repo);
-
-    let query = use_query_map();
-    let initial_spec_id = query
-        .read_untracked()
-        .get("spec_id")
-        .and_then(|v| v.parse::<i32>().ok());
-
     let title = RwSignal::new(String::new());
-    let selected_spec = RwSignal::new(initial_spec_id);
     let navigate = use_navigate();
     let create_action = Action::new(move |_: &()| {
         let t = title.get();
         let rid = repo_id();
-        let sid = selected_spec.get().unwrap_or(0);
-        async move { create_proposal(rid, sid, t).await }
+        async move { create_proposal(rid, t).await }
     });
 
     Effect::new(move |_| {
@@ -244,69 +195,13 @@ pub fn NewProposalPage() -> impl IntoView {
             </div>
 
             <div class="field">
-                <label class="label">"Spec"</label>
-                <div class="control">
-                    <div class="select">
-                        <Suspense fallback=move || {
-                            view! { <select disabled><option>"Loading..."</option></select> }
-                        }>
-                            {move || {
-                                specs
-                                    .get()
-                                    .map(|result| {
-                                        match result {
-                                            Ok(spec_list) => {
-                                                view! {
-                                                    <select
-                                                        prop:value=move || {
-                                                            selected_spec
-                                                                .get()
-                                                                .map(|id| id.to_string())
-                                                                .unwrap_or_default()
-                                                        }
-                                                        on:change=move |ev| {
-                                                            let val = event_target_value(&ev);
-                                                            selected_spec.set(val.parse::<i32>().ok());
-                                                        }
-                                                    >
-                                                        <option value="">"Select a spec..."</option>
-                                                        {spec_list
-                                                            .into_iter()
-                                                            .map(|s| {
-                                                                let id_str = s.id.to_string();
-                                                                view! { <option value=id_str>{s.name}</option> }
-                                                            })
-                                                            .collect_view()}
-                                                    </select>
-                                                }
-                                                    .into_any()
-                                            }
-                                            Err(_) => {
-                                                view! {
-                                                    <select disabled>
-                                                        <option>"Failed to load specs"</option>
-                                                    </select>
-                                                }
-                                                    .into_any()
-                                            }
-                                        }
-                                    })
-                            }}
-                        </Suspense>
-                    </div>
-                </div>
-            </div>
-
-            <div class="field">
                 <div class="control">
                     <button
                         class="button is-primary"
                         on:click=move |_| {
                             create_action.dispatch(());
                         }
-                        disabled=move || {
-                            selected_spec.get().is_none() || create_action.pending().get()
-                        }
+                        disabled=move || create_action.pending().get()
                     >
                         {move || {
                             if create_action.pending().get() {

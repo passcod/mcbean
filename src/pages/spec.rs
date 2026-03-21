@@ -122,11 +122,8 @@ pub fn SpecPage() -> impl IntoView {
                 spec.get().map(|result| match result {
                     Ok(detail) => {
                         let name = detail.name.clone();
-                        let propose_href = format!(
-                            "/repo/{}/proposal/new?spec_id={}",
-                            repo_id(),
-                            spec_id()
-                        );
+                        let propose_href =
+                            format!("/repo/{}/proposal/new", repo_id());
                         view! {
                             <div class="level">
                                 <div class="level-left">

@@ -1,0 +1,1 @@
+ALTER TABLE proposals ADD COLUMN spec_id INTEGER REFERENCES specs(id);

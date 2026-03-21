@@ -17,7 +17,6 @@ diesel::table! {
     proposals (id) {
         id -> Int4,
         repository_id -> Int4,
-        spec_id -> Int4,
         title -> Nullable<Varchar>,
         title_is_user_supplied -> Bool,
         branch_name -> Varchar,
@@ -77,7 +76,6 @@ diesel::table! {
 diesel::joinable!(proposal_changes -> proposals (proposal_id));
 diesel::joinable!(proposal_changes -> users (user_id));
 diesel::joinable!(proposals -> repositories (repository_id));
-diesel::joinable!(proposals -> specs (spec_id));
 diesel::joinable!(proposals -> users (created_by));
 diesel::joinable!(spec_files -> specs (spec_id));
 diesel::joinable!(specs -> repositories (repository_id));
