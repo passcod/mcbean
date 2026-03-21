@@ -248,6 +248,7 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
                             repositories::owner.eq(&owner_clone),
                             repositories::name.eq(&name_clone),
                             repositories::default_branch.eq(&default_branch),
+                            repositories::last_synced_sha.eq(&commit_sha),
                         ))
                         .returning((
                             repositories::id,

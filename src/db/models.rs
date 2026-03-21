@@ -41,6 +41,7 @@ pub struct Repository {
     pub created_at: Timestamp,
     #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
     pub updated_at: Timestamp,
+    pub last_synced_sha: Option<String>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]

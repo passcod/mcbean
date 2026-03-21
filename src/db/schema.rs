@@ -38,6 +38,7 @@ diesel::table! {
         slack_webhook_url -> Nullable<Varchar>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        last_synced_sha -> Nullable<Varchar>,
     }
 }
 
