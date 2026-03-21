@@ -333,6 +333,8 @@ impl GitHubClient {
                     "glob resolved"
                 );
 
+                let mut matched: Vec<_> = matched;
+                matched.sort_by(|a, b| a.0.cmp(b.0));
                 for (path, blob_sha) in matched {
                     let content = self.get_blob(owner, repo, blob_sha).await?;
                     results.push(FetchedFile {

@@ -134,7 +134,10 @@ pub async fn build_doc_from_specs(specs: &[(String, Vec<(String, String)>)]) -> 
         spec_meta.insert("kind", KIND_SPEC).unwrap();
         spec_meta.insert("name", spec_name.as_str()).unwrap();
 
-        for (file_path, file_content) in files {
+        let mut sorted_files: Vec<&(String, String)> = files.iter().collect();
+        sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        for (file_path, file_content) in sorted_files {
             let file_node = tree
                 .create(TreeParentId::Node(spec_node))
                 .expect("create file node");
