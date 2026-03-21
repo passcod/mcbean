@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_navigate, use_params_map};
 use serde::{Deserialize, Serialize};
 
 use crate::components::Editor;
@@ -74,6 +74,9 @@ pub async fn create_proposal(
 ) -> Result<i32, ServerFnError> {
     use diesel::prelude::*;
 
+    // r[impl users.identity]
+    let user_id = crate::auth::get_or_create_user_id().await?;
+
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
@@ -103,8 +106,8 @@ pub async fn create_proposal(
                 title_is_user_supplied: Some(title_is_user),
                 branch_name,
                 // r[impl lifecycle.drafting]
-                status: Some("draft".to_string()),
-                created_by: 1, // TODO: get from auth context
+                status: None,
+                created_by: user_id,
             })
             .returning(proposals::id)
             .get_result::<i32>(conn)
@@ -185,6 +188,7 @@ pub fn NewProposalPage() -> impl IntoView {
 
     let title = RwSignal::new(String::new());
     let selected_spec = RwSignal::new(Option::<i32>::None);
+    let navigate = use_navigate();
     let create_action = Action::new(move |_: &()| {
         let t = title.get();
         let rid = repo_id();
@@ -192,8 +196,29 @@ pub fn NewProposalPage() -> impl IntoView {
         async move { create_proposal(rid, sid, t).await }
     });
 
+    Effect::new(move |_| {
+        if let Some(Ok(new_id)) = create_action.value().get() {
+            navigate(
+                &format!("/repo/{}/proposal/{}", repo_id(), new_id),
+                Default::default(),
+            );
+        }
+    });
+
     view! {
         <h1 class="title">"New Proposal"</h1>
+
+        {move || {
+            create_action
+                .value()
+                .get()
+                .and_then(|r| r.err())
+                .map(|e| {
+                    view! {
+                        <div class="notification is-danger">{format!("Error: {e}")}</div>
+                    }
+                })
+        }}
 
         <div class="box">
             <div class="field">
@@ -265,9 +290,17 @@ pub fn NewProposalPage() -> impl IntoView {
                         on:click=move |_| {
                             create_action.dispatch(());
                         }
-                        disabled=move || selected_spec.get().is_none()
+                        disabled=move || {
+                            selected_spec.get().is_none() || create_action.pending().get()
+                        }
                     >
-                        "Create Proposal"
+                        {move || {
+                            if create_action.pending().get() {
+                                "Creating..."
+                            } else {
+                                "Create Proposal"
+                            }
+                        }}
                     </button>
                 </div>
             </div>

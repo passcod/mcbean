@@ -286,10 +286,10 @@ pub fn RepoPage() -> impl IntoView {
                                                         .title
                                                         .unwrap_or_else(|| format!("Proposal #{}", p.id));
                                                     let badge_class = match p.status.as_str() {
-                                                        "draft" => "tag is-warning",
-                                                        "submitted" => "tag is-info",
+                                                        "drafting" => "tag is-warning",
+                                                        "in_progress" => "tag is-info",
                                                         "merged" => "tag is-success",
-                                                        "closed" => "tag is-danger",
+                                                        "abandoned" => "tag is-danger",
                                                         _ => "tag is-light",
                                                     };
                                                     view! {
