@@ -11,11 +11,13 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 use crate::app::App;
 use crate::db::{DbPool, create_pool};
+use crate::github::GitHubClient;
 
 #[derive(Clone)]
 pub struct AppState {
     pub leptos_options: LeptosOptions,
     pub pool: DbPool,
+    pub github: GitHubClient,
 }
 
 impl axum::extract::FromRef<AppState> for LeptosOptions {
@@ -53,6 +55,7 @@ pub async fn run() {
 
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = create_pool(&database_url);
+    let github = GitHubClient::from_env();
 
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
@@ -62,6 +65,7 @@ pub async fn run() {
     let state = AppState {
         leptos_options: leptos_options.clone(),
         pool: pool.clone(),
+        github: github.clone(),
     };
 
     let app = Router::new()
@@ -70,8 +74,10 @@ pub async fn run() {
             routes,
             {
                 let pool = pool.clone();
+                let github = github.clone();
                 move || {
                     provide_context(pool.clone());
+                    provide_context(github.clone());
                 }
             },
             {

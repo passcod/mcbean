@@ -9,43 +9,61 @@ pub struct RepositoryInfo {
     pub name: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AddRepoResult {
+    pub repo: RepositoryInfo,
+    pub specs_found: Vec<String>,
+}
+
 #[server]
 pub async fn list_repositories() -> Result<Vec<RepositoryInfo>, ServerFnError> {
     use diesel::prelude::*;
+
+    tracing::info!("listing all repositories");
 
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
         .get()
         .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-    conn.interact(|conn| {
-        use crate::db::schema::repositories::dsl::*;
-        repositories
-            .select((id, github_url, owner, name))
-            .load::<(i32, String, String, String)>(conn)
-            .map(|rows| {
-                rows.into_iter()
-                    .map(|(rid, url, o, n)| RepositoryInfo {
-                        id: rid,
-                        github_url: url,
-                        owner: o,
-                        name: n,
-                    })
-                    .collect()
-            })
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e| ServerFnError::new(format!("{e}")))
+        .map_err(|e| ServerFnError::new(format!("pool error: {e}")))?;
+
+    let result: Vec<RepositoryInfo> = conn
+        .interact(|conn| {
+            use crate::db::schema::repositories::dsl::*;
+            repositories
+                .select((id, github_url, owner, name))
+                .load::<(i32, String, String, String)>(conn)
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|(rid, url, o, n)| RepositoryInfo {
+                            id: rid,
+                            github_url: url,
+                            owner: o,
+                            name: n,
+                        })
+                        .collect()
+                })
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
+        .map_err(|e| ServerFnError::new(format!("query error: {e}")))?;
+
+    tracing::info!(count = result.len(), "listed repositories");
+    Ok(result)
 }
 
+// r[impl repo.connect]
 #[server]
-pub async fn add_repository(github_url: String) -> Result<RepositoryInfo, ServerFnError> {
+pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerFnError> {
     use diesel::prelude::*;
 
-    let parts: Vec<&str> = github_url.trim_end_matches('/').rsplit('/').collect();
+    tracing::info!(%github_url, "add_repository called");
+
+    let trimmed = github_url.trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.rsplit('/').collect();
     if parts.len() < 2 {
+        tracing::warn!(%github_url, "invalid GitHub URL: cannot extract owner/name");
         return Err(ServerFnError::new(
             "Invalid GitHub URL: expected owner/name in path",
         ));
@@ -53,40 +71,245 @@ pub async fn add_repository(github_url: String) -> Result<RepositoryInfo, Server
     let repo_name = parts[0].to_string();
     let repo_owner = parts[1].to_string();
 
+    tracing::info!(owner = %repo_owner, name = %repo_name, "parsed repository coordinates");
+
+    let github = use_context::<crate::github::GitHubClient>()
+        .ok_or_else(|| ServerFnError::new("No GitHub client available"))?;
+
+    // Fetch repo metadata to confirm it exists and get the default branch
+    let metadata = github
+        .get_repo_metadata(&repo_owner, &repo_name)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                owner = %repo_owner,
+                name = %repo_name,
+                error = %e,
+                "failed to fetch repository metadata from GitHub"
+            );
+            ServerFnError::new(format!("GitHub API error fetching repo metadata: {e}"))
+        })?;
+
+    tracing::info!(
+        default_branch = %metadata.default_branch,
+        "fetched repo metadata from GitHub"
+    );
+
+    // Get the HEAD commit SHA for storing with spec files
+    let commit_sha = github
+        .get_branch_head_sha(&repo_owner, &repo_name, &metadata.default_branch)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                branch = %metadata.default_branch,
+                error = %e,
+                "failed to fetch branch HEAD SHA"
+            );
+            ServerFnError::new(format!("GitHub API error fetching branch HEAD: {e}"))
+        })?;
+
+    tracing::info!(%commit_sha, "resolved HEAD commit");
+
+    // Try to fetch .config/tracey/config.styx
+    let config_path = ".config/tracey/config.styx";
+    let config_result = github
+        .get_file_contents(
+            &repo_owner,
+            &repo_name,
+            config_path,
+            &metadata.default_branch,
+        )
+        .await;
+
+    let spec_defs = match config_result {
+        Ok(fetched) => {
+            tracing::info!(
+                path = config_path,
+                content_len = fetched.content.len(),
+                "fetched tracey config"
+            );
+            crate::tracey_config::parse_tracey_config(&fetched.content).map_err(|e| {
+                tracing::error!(error = %e, "failed to parse tracey config");
+                ServerFnError::new(format!("Failed to parse tracey config: {e}"))
+            })?
+        }
+        Err(crate::github::GitHubError::NotFound(_)) => {
+            tracing::warn!(path = config_path, "tracey config not found in repository");
+            return Err(ServerFnError::new(
+                "No tracey configuration found at .config/tracey/config.styx — \
+                 this repository does not appear to contain a Tracey spec",
+            ));
+        }
+        Err(e) => {
+            tracing::error!(
+                path = config_path,
+                error = %e,
+                "failed to fetch tracey config"
+            );
+            return Err(ServerFnError::new(format!(
+                "GitHub API error fetching tracey config: {e}"
+            )));
+        }
+    };
+
+    if spec_defs.is_empty() {
+        tracing::warn!("tracey config was parsed but contained no spec definitions");
+        return Err(ServerFnError::new(
+            "Tracey config was found but contains no spec definitions",
+        ));
+    }
+
+    tracing::info!(
+        spec_count = spec_defs.len(),
+        specs = ?spec_defs.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        "parsed tracey config"
+    );
+
+    // Fetch all spec files from GitHub
+    let mut spec_files_by_spec: Vec<(String, Vec<(String, String)>)> = Vec::new();
+
+    for spec_def in &spec_defs {
+        let mut files = Vec::new();
+        for include_path in &spec_def.include {
+            tracing::info!(
+                spec = %spec_def.name,
+                path = %include_path,
+                "fetching spec file from GitHub"
+            );
+            match github
+                .get_file_contents(
+                    &repo_owner,
+                    &repo_name,
+                    include_path,
+                    &metadata.default_branch,
+                )
+                .await
+            {
+                Ok(fetched) => {
+                    tracing::info!(
+                        spec = %spec_def.name,
+                        path = %include_path,
+                        content_len = fetched.content.len(),
+                        "fetched spec file"
+                    );
+                    files.push((fetched.path, fetched.content));
+                }
+                Err(e) => {
+                    tracing::error!(
+                        spec = %spec_def.name,
+                        path = %include_path,
+                        error = %e,
+                        "failed to fetch spec file"
+                    );
+                    return Err(ServerFnError::new(format!(
+                        "Failed to fetch spec file {include_path}: {e}"
+                    )));
+                }
+            }
+        }
+        spec_files_by_spec.push((spec_def.name.clone(), files));
+    }
+
+    // Verify that at least one spec has at least one file with tracey rule annotations
+    let has_tracey_rules = spec_files_by_spec.iter().any(|(_, files)| {
+        files
+            .iter()
+            .any(|(_, content)| content.contains("r[") && content.contains(']'))
+    });
+
+    if !has_tracey_rules {
+        tracing::warn!("no tracey rule annotations (r[...]) found in any spec file");
+        return Err(ServerFnError::new(
+            "The spec files listed in the tracey config do not contain any Tracey rule \
+             annotations (r[...]). Are you sure this is a Tracey spec repository?",
+        ));
+    }
+
+    // All validation passed — now persist to the database
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
         .get()
         .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+        .map_err(|e| ServerFnError::new(format!("pool error: {e}")))?;
 
+    let default_branch = metadata.default_branch.clone();
     let url = github_url.clone();
-    conn.interact(move |conn| {
-        use crate::db::schema::repositories;
-        // r[impl repo.connect]
-        diesel::insert_into(repositories::table)
-            .values((
-                repositories::github_url.eq(&url),
-                repositories::owner.eq(&repo_owner),
-                repositories::name.eq(&repo_name),
-            ))
-            .returning((
-                repositories::id,
-                repositories::github_url,
-                repositories::owner,
-                repositories::name,
-            ))
-            .get_result::<(i32, String, String, String)>(conn)
-            .map(|(rid, u, o, n)| RepositoryInfo {
-                id: rid,
-                github_url: u,
-                owner: o,
-                name: n,
+    let owner_clone = repo_owner.clone();
+    let name_clone = repo_name.clone();
+
+    let result = conn
+        .interact(move |conn| {
+            use crate::db::schema::{repositories, spec_files, specs};
+
+            conn.transaction::<AddRepoResult, diesel::result::Error, _>(|conn| {
+                // Insert the repository
+                let (rid, rurl, rowner, rname): (i32, String, String, String) =
+                    diesel::insert_into(repositories::table)
+                        .values((
+                            repositories::github_url.eq(&url),
+                            repositories::owner.eq(&owner_clone),
+                            repositories::name.eq(&name_clone),
+                            repositories::default_branch.eq(&default_branch),
+                        ))
+                        .returning((
+                            repositories::id,
+                            repositories::github_url,
+                            repositories::owner,
+                            repositories::name,
+                        ))
+                        .get_result(conn)?;
+
+                let repo_info = RepositoryInfo {
+                    id: rid,
+                    github_url: rurl,
+                    owner: rowner,
+                    name: rname,
+                };
+
+                let mut spec_names = Vec::new();
+
+                // Insert specs and their files
+                for (spec_name, files) in &spec_files_by_spec {
+                    let (spec_id,): (i32,) = diesel::insert_into(specs::table)
+                        .values((specs::repository_id.eq(rid), specs::name.eq(spec_name)))
+                        .returning((specs::id,))
+                        .get_result(conn)?;
+
+                    for (file_path, file_content) in files {
+                        diesel::insert_into(spec_files::table)
+                            .values((
+                                spec_files::spec_id.eq(spec_id),
+                                spec_files::path.eq(file_path),
+                                spec_files::content.eq(file_content),
+                                spec_files::commit_sha.eq(&commit_sha),
+                            ))
+                            .execute(conn)?;
+                    }
+
+                    spec_names.push(spec_name.clone());
+                }
+
+                Ok(AddRepoResult {
+                    repo: repo_info,
+                    specs_found: spec_names,
+                })
             })
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e| ServerFnError::new(format!("{e}")))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
+        .map_err(|e| {
+            tracing::error!(error = %e, "database transaction failed");
+            ServerFnError::new(format!("Database error: {e}"))
+        })?;
+
+    tracing::info!(
+        repo_id = result.repo.id,
+        specs = ?result.specs_found,
+        "repository added with specs"
+    );
+
+    Ok(result)
 }
 
 #[component]
@@ -95,14 +318,26 @@ pub fn HomePage() -> impl IntoView {
     let add_action = ServerAction::<AddRepository>::new();
     let show_modal = RwSignal::new(false);
     let url_input = RwSignal::new(String::new());
+    let error_message = RwSignal::new(Option::<String>::None);
 
     Effect::new(move || {
         if add_action.version().get() > 0 {
-            show_modal.set(false);
-            url_input.set(String::new());
-            repos.refetch();
+            match add_action.value().get() {
+                Some(Ok(_)) => {
+                    show_modal.set(false);
+                    url_input.set(String::new());
+                    error_message.set(None);
+                    repos.refetch();
+                }
+                Some(Err(e)) => {
+                    error_message.set(Some(e.to_string()));
+                }
+                None => {}
+            }
         }
     });
+
+    let is_submitting = move || add_action.pending().get();
 
     view! {
         <section class="hero is-primary is-medium">
@@ -120,7 +355,10 @@ pub fn HomePage() -> impl IntoView {
                 <div class="level-right">
                     <button
                         class="button is-primary"
-                        on:click=move |_| show_modal.set(true)
+                        on:click=move |_| {
+                            error_message.set(None);
+                            show_modal.set(true);
+                        }
                     >
                         "Add Repository"
                     </button>
@@ -180,17 +418,29 @@ pub fn HomePage() -> impl IntoView {
         </section>
 
         <div class=move || if show_modal.get() { "modal is-active" } else { "modal" }>
-            <div class="modal-background" on:click=move |_| show_modal.set(false)></div>
+            <div class="modal-background" on:click=move |_| {
+                if !is_submitting() {
+                    show_modal.set(false);
+                }
+            }></div>
             <div class="modal-card">
                 <header class="modal-card-head">
                     <p class="modal-card-title">"Add Repository"</p>
                     <button
                         class="delete"
                         aria-label="close"
+                        disabled=is_submitting
                         on:click=move |_| show_modal.set(false)
                     ></button>
                 </header>
                 <section class="modal-card-body">
+                    {move || error_message.get().map(|msg| view! {
+                        <div class="notification is-danger">
+                            <button class="delete" on:click=move |_| error_message.set(None)></button>
+                            {msg}
+                        </div>
+                    })}
+
                     // r[impl repo.connect]
                     <ActionForm action=add_action>
                         <div class="field">
@@ -205,12 +455,22 @@ pub fn HomePage() -> impl IntoView {
                                     on:input=move |ev| {
                                         url_input.set(event_target_value(&ev));
                                     }
+                                    disabled=is_submitting
                                 />
                             </div>
+                            <p class="help">
+                                "The repository must contain a Tracey configuration at "
+                                <code>".config/tracey/config.styx"</code>
+                            </p>
                         </div>
                         <div class="field">
                             <div class="control">
-                                <button type="submit" class="button is-primary">
+                                <button
+                                    type="submit"
+                                    class="button is-primary"
+                                    class:is-loading=is_submitting
+                                    disabled=is_submitting
+                                >
                                     "Add"
                                 </button>
                             </div>

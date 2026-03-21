@@ -2,6 +2,9 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "ssr")]
+use tracing::info;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub id: i32,
@@ -27,6 +30,8 @@ pub struct ProposalInfo {
 pub async fn get_repository(repo_id: i32) -> Result<RepoInfo, ServerFnError> {
     use diesel::prelude::*;
 
+    info!(repo_id, "get_repository called");
+
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
@@ -47,73 +52,92 @@ pub async fn get_repository(repo_id: i32) -> Result<RepoInfo, ServerFnError> {
         })
     })
     .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e| ServerFnError::new(format!("{e}")))
+    .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
+    .map_err(|e| {
+        tracing::error!(repo_id, error = %e, "get_repository query failed");
+        ServerFnError::new(format!("query error: {e}"))
+    })
 }
 
 #[server]
 pub async fn list_specs(repo_id: i32) -> Result<Vec<SpecInfo>, ServerFnError> {
     use diesel::prelude::*;
 
+    info!(repo_id, "list_specs called");
+
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
         .get()
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
-    conn.interact(move |conn| {
-        use crate::db::schema::specs::dsl::*;
-        // r[impl repo.multi-spec]
-        let results = specs
-            .filter(repository_id.eq(repo_id))
-            .select((id, name))
-            .load::<(i32, String)>(conn)?;
-        Ok::<_, diesel::result::Error>(
-            results
-                .into_iter()
-                .map(|(sid, sname)| SpecInfo {
-                    id: sid,
-                    name: sname,
-                })
-                .collect(),
-        )
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e| ServerFnError::new(format!("{e}")))
+    let result = conn
+        .interact(move |conn| {
+            use crate::db::schema::specs::dsl::*;
+            // r[impl repo.multi-spec]
+            let rows = specs
+                .filter(repository_id.eq(repo_id))
+                .select((id, name))
+                .load::<(i32, String)>(conn)?;
+            Ok::<_, diesel::result::Error>(
+                rows.into_iter()
+                    .map(|(sid, sname)| SpecInfo {
+                        id: sid,
+                        name: sname,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
+        .map_err(|e| {
+            tracing::error!(repo_id, error = %e, "list_specs query failed");
+            ServerFnError::new(format!("query error: {e}"))
+        })?;
+
+    info!(repo_id, count = result.len(), "list_specs returned");
+    Ok(result)
 }
 
 #[server]
 pub async fn list_proposals(repo_id: i32) -> Result<Vec<ProposalInfo>, ServerFnError> {
     use diesel::prelude::*;
 
+    info!(repo_id, "list_proposals called");
+
     let pool =
         use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
     let conn = pool
         .get()
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
-    conn.interact(move |conn| {
-        use crate::db::schema::proposals::dsl::*;
-        // r[impl proposal.multiple.overview]
-        let results = proposals
-            .filter(repository_id.eq(repo_id))
-            .select((id, title, status))
-            .load::<(i32, Option<String>, String)>(conn)?;
-        Ok::<_, diesel::result::Error>(
-            results
-                .into_iter()
-                .map(|(pid, ptitle, pstatus)| ProposalInfo {
-                    id: pid,
-                    title: ptitle,
-                    status: pstatus,
-                })
-                .collect(),
-        )
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e| ServerFnError::new(format!("{e}")))
+    let result = conn
+        .interact(move |conn| {
+            use crate::db::schema::proposals::dsl::*;
+            // r[impl proposal.multiple.overview]
+            let rows = proposals
+                .filter(repository_id.eq(repo_id))
+                .select((id, title, status))
+                .load::<(i32, Option<String>, String)>(conn)?;
+            Ok::<_, diesel::result::Error>(
+                rows.into_iter()
+                    .map(|(pid, ptitle, pstatus)| ProposalInfo {
+                        id: pid,
+                        title: ptitle,
+                        status: pstatus,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
+        .map_err(|e| {
+            tracing::error!(repo_id, error = %e, "list_proposals query failed");
+            ServerFnError::new(format!("query error: {e}"))
+        })?;
+
+    info!(repo_id, count = result.len(), "list_proposals returned");
+    Ok(result)
 }
 
 #[component]
