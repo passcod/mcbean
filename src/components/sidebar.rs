@@ -130,14 +130,32 @@ pub fn SpecSidebar(outline: Vec<SpecOutline>, search_entries: Vec<SearchEntry>) 
                         }).into_any()
                     } else {
                         // r[impl view.search]
-                        let q_lower = q.to_lowercase();
-                        let results = search_entries.with_value(|entries| {
+                        let words: Vec<String> = q
+                            .split_whitespace()
+                            .map(|w| w.to_lowercase())
+                            .collect();
+                        let mut scored = search_entries.with_value(|entries| {
                             entries
                                 .iter()
-                                .filter(|e| e.text.to_lowercase().contains(&q_lower))
-                                .cloned()
+                                .filter_map(|e| {
+                                    let text_lower = e.text.to_lowercase();
+                                    let matches = words
+                                        .iter()
+                                        .filter(|w| text_lower.contains(w.as_str()))
+                                        .count();
+                                    if matches > 0 {
+                                        Some((matches, e.clone()))
+                                    } else {
+                                        None
+                                    }
+                                })
                                 .collect::<Vec<_>>()
                         });
+                        // Stable sort: higher match count first, preserving
+                        // original document order within the same score.
+                        scored.sort_by(|a, b| b.0.cmp(&a.0));
+                        let results: Vec<SearchEntry> =
+                            scored.into_iter().map(|(_, e)| e).collect();
 
                         if results.is_empty() {
                             view! {
