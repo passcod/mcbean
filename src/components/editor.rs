@@ -19,6 +19,7 @@ pub fn Editor(
     view! {
         <div class="field">
             <div class="control">
+                // r[impl edit.rule-text]
                 <textarea
                     class="textarea"
                     prop:value=value

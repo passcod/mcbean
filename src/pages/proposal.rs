@@ -11,6 +11,8 @@ pub struct ProposalDetail {
     pub spec_id: i32,
     pub title: Option<String>,
     pub status: String,
+    // r[impl proposal.git.exposure]
+    // branch_name deliberately excluded from client-facing DTO
     pub spec_content: String,
 }
 
@@ -79,12 +81,15 @@ pub async fn create_proposal(
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
 
+    // r[impl proposal.git.backing]
     let branch_name = format!("mcbean/proposal-{}", hex::encode(rand::random::<[u8; 4]>()));
+    // r[impl proposal.create.dismiss]
     let title_val = if title.is_empty() {
         None
     } else {
         Some(title.clone())
     };
+    // r[impl proposal.title.user-priority]
     let title_is_user = title_val.is_some();
 
     conn.interact(move |conn| {
@@ -97,6 +102,7 @@ pub async fn create_proposal(
                 title: title_val,
                 title_is_user_supplied: Some(title_is_user),
                 branch_name,
+                // r[impl lifecycle.drafting]
                 status: Some("draft".to_string()),
                 created_by: 1, // TODO: get from auth context
             })
@@ -123,7 +129,9 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
 
         diesel::update(proposals::table.find(proposal_id))
             .set((
+                // r[impl proposal.title.editable]
                 proposals::title.eq(Some(&title)),
+                // r[impl proposal.title.user-priority]
                 proposals::title_is_user_supplied.eq(true),
             ))
             .execute(conn)?;
@@ -189,6 +197,7 @@ pub fn NewProposalPage() -> impl IntoView {
 
         <div class="box">
             <div class="field">
+                // r[impl proposal.create.dismiss]
                 <label class="label">"Title (optional)"</label>
                 <div class="control">
                     <input
@@ -310,6 +319,8 @@ pub fn ProposalPage() -> impl IntoView {
                                     <div class="level">
                                         <div class="level-left">
                                             <div class="level-item">
+                                                // r[impl proposal.title.editable]
+                                                // r[impl proposal.git.exposure]
                                                 <Show
                                                     when=move || !editing_title.get()
                                                     fallback=move || {
@@ -375,6 +386,8 @@ pub fn ProposalPage() -> impl IntoView {
                                     </div>
 
                                     <div class="content">
+                                        // r[impl edit.availability]
+                                        // r[impl users.collaboration]
                                         <Show
                                             when=move || editing_content.get()
                                             fallback={
@@ -398,6 +411,7 @@ pub fn ProposalPage() -> impl IntoView {
                                             {
                                                 let c = content.clone();
                                                 view! {
+                                                    // r[impl edit.rule-text]
                                                     <Editor
                                                         content=c.clone()
                                                         on_save=Callback::new(move |_new_content: String| {

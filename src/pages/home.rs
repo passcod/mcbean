@@ -63,6 +63,7 @@ pub async fn add_repository(github_url: String) -> Result<RepositoryInfo, Server
     let url = github_url.clone();
     conn.interact(move |conn| {
         use crate::db::schema::repositories;
+        // r[impl repo.connect]
         diesel::insert_into(repositories::table)
             .values((
                 repositories::github_url.eq(&url),
@@ -190,6 +191,7 @@ pub fn HomePage() -> impl IntoView {
                     ></button>
                 </header>
                 <section class="modal-card-body">
+                    // r[impl repo.connect]
                     <ActionForm action=add_action>
                         <div class="field">
                             <label class="label">"GitHub URL"</label>

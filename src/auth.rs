@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TailscaleUser {
+    // r[impl users.identity]
     pub email: String,
     pub name: Option<String>,
 }
@@ -19,6 +20,7 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for TailscaleUser {
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
+        // r[impl users.identity]
         let email = parts
             .headers
             .get(TAILSCALE_USER_LOGIN)

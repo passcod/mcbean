@@ -27,6 +27,7 @@ pub fn Nav() -> impl IntoView {
                         <Suspense fallback=move || view! { <span>"Loading..."</span> }>
                             {move || Suspend::new(async move {
                                 match user_info.await {
+                                    // r[impl users.identity]
                                     Ok(user) => view! {
                                         <span class="has-text-light">{user.email}</span>
                                     }.into_any(),

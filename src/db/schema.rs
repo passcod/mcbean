@@ -1,6 +1,7 @@
 diesel::table! {
     users (id) {
         id -> Int4,
+        // r[impl users.identity]
         email -> Varchar,
         display_name -> Nullable<Varchar>,
         created_at -> Timestamp,
@@ -11,10 +12,12 @@ diesel::table! {
 diesel::table! {
     repositories (id) {
         id -> Int4,
+        // r[impl repo.connect]
         github_url -> Varchar,
         owner -> Varchar,
         name -> Varchar,
         default_branch -> Varchar,
+        // r[impl notify.slack]
         slack_webhook_url -> Nullable<Varchar>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
@@ -24,6 +27,7 @@ diesel::table! {
 diesel::table! {
     specs (id) {
         id -> Int4,
+        // r[impl repo.multi-spec]
         repository_id -> Int4,
         name -> Varchar,
         created_at -> Timestamp,
@@ -34,6 +38,7 @@ diesel::table! {
 diesel::table! {
     spec_files (id) {
         id -> Int4,
+        // r[impl repo.multi-file]
         spec_id -> Int4,
         path -> Varchar,
         content -> Text,
@@ -49,8 +54,11 @@ diesel::table! {
         repository_id -> Int4,
         spec_id -> Int4,
         title -> Nullable<Varchar>,
+        // r[impl proposal.title.user-priority]
         title_is_user_supplied -> Bool,
+        // r[impl proposal.git.backing]
         branch_name -> Varchar,
+        // r[impl lifecycle.drafting]
         status -> Varchar,
         created_by -> Int4,
         created_at -> Timestamp,
@@ -62,10 +70,13 @@ diesel::table! {
     proposal_changes (id) {
         id -> Int4,
         proposal_id -> Int4,
+        // r[impl edit.history]
         parent_change_id -> Nullable<Int4>,
+        // r[impl users.identity]
         user_id -> Int4,
         change_type -> Varchar,
         llm_prompt -> Nullable<Text>,
+        // r[impl edit.history]
         content_snapshot -> Text,
         created_at -> Timestamp,
     }

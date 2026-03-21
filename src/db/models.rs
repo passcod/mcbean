@@ -9,6 +9,7 @@ use super::schema::*;
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct User {
     pub id: i32,
+    // r[impl users.identity]
     pub email: String,
     pub display_name: Option<String>,
     pub created_at: NaiveDateTime,
@@ -27,10 +28,12 @@ pub struct NewUser {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Repository {
     pub id: i32,
+    // r[impl repo.connect]
     pub github_url: String,
     pub owner: String,
     pub name: String,
     pub default_branch: String,
+    // r[impl notify.slack]
     pub slack_webhook_url: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -51,6 +54,7 @@ pub struct NewRepository {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct Spec {
     pub id: i32,
+    // r[impl repo.multi-spec]
     pub repository_id: i32,
     pub name: String,
     pub created_at: NaiveDateTime,
@@ -69,6 +73,7 @@ pub struct NewSpec {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct SpecFile {
     pub id: i32,
+    // r[impl repo.multi-file]
     pub spec_id: i32,
     pub path: String,
     pub content: String,
@@ -94,8 +99,11 @@ pub struct Proposal {
     pub repository_id: i32,
     pub spec_id: i32,
     pub title: Option<String>,
+    // r[impl proposal.title.user-priority]
     pub title_is_user_supplied: bool,
+    // r[impl proposal.git.backing]
     pub branch_name: String,
+    // r[impl lifecycle.drafting]
     pub status: String,
     pub created_by: i32,
     pub created_at: NaiveDateTime,
@@ -120,10 +128,12 @@ pub struct NewProposal {
 pub struct ProposalChange {
     pub id: i32,
     pub proposal_id: i32,
+    // r[impl edit.history]
     pub parent_change_id: Option<i32>,
     pub user_id: i32,
     pub change_type: String,
     pub llm_prompt: Option<String>,
+    // r[impl edit.history]
     pub content_snapshot: String,
     pub created_at: NaiveDateTime,
 }

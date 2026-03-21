@@ -63,6 +63,7 @@ pub async fn list_specs(repo_id: i32) -> Result<Vec<SpecInfo>, ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
     conn.interact(move |conn| {
         use crate::db::schema::specs::dsl::*;
+        // r[impl repo.multi-spec]
         let results = specs
             .filter(repository_id.eq(repo_id))
             .select((id, name))
@@ -94,6 +95,7 @@ pub async fn list_proposals(repo_id: i32) -> Result<Vec<ProposalInfo>, ServerFnE
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
     conn.interact(move |conn| {
         use crate::db::schema::proposals::dsl::*;
+        // r[impl proposal.multiple.overview]
         let results = proposals
             .filter(repository_id.eq(repo_id))
             .select((id, title, status))
@@ -194,6 +196,7 @@ pub fn RepoPage() -> impl IntoView {
                                 } else {
                                     let rid = repo_id();
                                     view! {
+                                        // r[impl repo.multi-spec]
                                         <div class="list">
                                             {spec_list
                                                 .into_iter()
@@ -230,6 +233,7 @@ pub fn RepoPage() -> impl IntoView {
             if active_tab.get() == "proposals" { "block" } else { "none" }
         }>
             <div class="mb-4">
+                // r[impl users.collaboration]
                 <a class="button is-primary" href=move || format!("/repo/{}/proposal/new", repo_id())>
                     "New Proposal"
                 </a>

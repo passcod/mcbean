@@ -12,6 +12,7 @@ pub fn SpecViewer(content: String) -> impl IntoView {
                     .map(|line| {
                         let has_rule_id = line.contains("[REQ-") || line.contains("[SPEC-");
                         if has_rule_id {
+                            // r[impl view.render]
                             let tag_text = line
                                 .split('[')
                                 .nth(1)
