@@ -69,69 +69,6 @@ pub async fn get_repository(repo_id: i32) -> Result<RepoInfo, ServerFnError> {
     })
 }
 
-#[cfg(feature = "ssr")]
-fn slugify(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c
-            } else if c == ' ' {
-                '-'
-            } else {
-                '\0'
-            }
-        })
-        .filter(|&c| c != '\0')
-        .collect()
-}
-
-#[cfg(feature = "ssr")]
-fn extract_headings(content: &str) -> Vec<HeadingEntry> {
-    // path holds (level, slug) for each ancestor heading currently in scope.
-    let mut path: Vec<(u8, String)> = Vec::new();
-    let mut entries = Vec::new();
-
-    for line in content.lines() {
-        let n = line.chars().take_while(|&c| c == '#').count();
-        if n == 0 || n > 6 {
-            continue;
-        }
-        let rest = &line[n..];
-        if !rest.starts_with(' ') {
-            continue;
-        }
-        let text = rest.trim().to_string();
-        if text.is_empty() {
-            continue;
-        }
-
-        let slug = slugify(&text);
-
-        // Pop any entries at the same level or deeper so the path only
-        // contains true ancestors of the current heading.
-        while path.last().map(|(l, _)| *l >= n as u8).unwrap_or(false) {
-            path.pop();
-        }
-        path.push((n as u8, slug));
-
-        // marq anchors are the full ancestor path joined with "--".
-        let anchor = path
-            .iter()
-            .map(|(_, s)| s.as_str())
-            .collect::<Vec<_>>()
-            .join("--");
-
-        entries.push(HeadingEntry {
-            level: n as u8,
-            text,
-            anchor,
-        });
-    }
-
-    entries
-}
-
 #[server]
 pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, ServerFnError> {
     use diesel::prelude::*;
@@ -185,12 +122,9 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
 
     let mut result = Vec::with_capacity(grouped.len());
     for (spec_id, spec_name, files) in grouped {
-        let headings: Vec<HeadingEntry> = files
-            .iter()
-            .flat_map(|(_, content)| extract_headings(content))
-            .collect();
-
         let mut rendered_files = Vec::with_capacity(files.len());
+        let mut headings: Vec<HeadingEntry> = Vec::new();
+
         for (path, content) in files {
             let opts = RenderOptions::new().with_source_path(&path);
             // r[impl view.render]
@@ -198,6 +132,13 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
                 tracing::error!(repo_id, %path, error = %e, "marq render failed");
                 ServerFnError::new(format!("Failed to render {path}: {e}"))
             })?;
+            for h in &doc.headings {
+                headings.push(HeadingEntry {
+                    level: h.level,
+                    text: h.title.clone(),
+                    anchor: h.id.clone(),
+                });
+            }
             rendered_files.push(RenderedFile {
                 path,
                 html: doc.html,
