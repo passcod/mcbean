@@ -73,7 +73,7 @@ pub fn SpecSidebar(specs: Vec<SpecOutline>) -> impl IntoView {
                     </button>
                 </div>
 
-                // Scrollable outline
+                // r[impl view.nav]
                 <nav style="overflow-y: auto; flex: 1; padding: 0.4rem 0;">
                     {specs.into_iter().map(|spec| view! {
                         <div style="margin-bottom: 0.75rem;">
