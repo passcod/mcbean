@@ -55,22 +55,22 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                         justify-content: space-between; \
                         padding: 0.875rem 1rem 0.75rem; \
                         border-bottom: 1px solid #f3f4f6;">
-                <span style="font-size: 0.9rem; font-weight: 600; color: #111827;">
+                <span style="font-size: 1rem; font-weight: 600; color: #111827;">
                     "New Proposal"
                 </span>
                 <button
                     style="border: none; background: none; cursor: pointer; \
                            color: #9ca3af; font-size: 1.2rem; line-height: 1; \
-                           padding: 0 2px; display: flex;"
+                           padding: 0 4px; display: flex; letter-spacing: -0.05em;"
                     on:click=move |_| panel_open.set(false)
                 >
-                    "×"
+                    "—"
                 </button>
             </div>
             <div style="padding: 0.875rem 1rem 1rem;">
                 // r[impl proposal.create.dismiss]
                 <input
-                    class="input is-small"
+                    class="input"
                     type="text"
                     placeholder="Title (optional)"
                     prop:value=move || title.get()
@@ -86,7 +86,7 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                         })
                 }}
                 <button
-                    class="button is-primary is-small is-fullwidth"
+                    class="button is-primary is-fullwidth"
                     style="margin-top: 0.625rem;"
                     disabled=move || create_action.pending().get()
                     on:click=move |_| { create_action.dispatch(()); }
@@ -102,8 +102,10 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
             </div>
         </div>
 
-        // FAB — round button that expands into a pill on hover to reveal label.
+        // FAB — hidden while the panel is open.
         <button
+            style:opacity=move || if panel_open.get() { "0" } else { "1" }
+            style:pointer-events=move || if panel_open.get() { "none" } else { "auto" }
             style:background=move || if hovered.get() { "#3254d4" } else { "#485fc7" }
             style="position: fixed; bottom: 1.5rem; right: 1.5rem; \
                    height: 56px; min-width: 56px; border-radius: 28px; \
@@ -111,7 +113,8 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                    display: flex; align-items: center; \
                    box-shadow: 0 4px 16px rgba(72,95,199,0.45); \
                    z-index: 1001; overflow: hidden; \
-                   transition: background 0.15s ease, box-shadow 0.15s ease;"
+                   transition: background 0.15s ease, box-shadow 0.15s ease, \
+                               opacity 0.15s ease;"
             on:mouseenter=move |_| hovered.set(true)
             on:mouseleave=move |_| hovered.set(false)
             on:click=move |_| panel_open.update(|v| *v = !*v)
