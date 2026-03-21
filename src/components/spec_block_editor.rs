@@ -420,6 +420,9 @@ pub fn SpecBlockEditor(
     /// server sync.  Initialised to an empty vec; the parent should render a
     /// loading fallback until it becomes non-empty.
     blocks_out: RwSignal<Vec<SpecBlock>>,
+    /// Owned by the parent so it can be forwarded to the changelog sidebar.
+    /// Set to Some(message) on sync failure, cleared on success.
+    sync_error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     // Key of the block whose textarea is currently open.
     let editing_key: RwSignal<Option<String>> = RwSignal::new(None);
@@ -432,7 +435,6 @@ pub fn SpecBlockEditor(
     // Sync state.
     let loaded = RwSignal::new(false);
     let syncing = RwSignal::new(false);
-    let sync_error: RwSignal<Option<String>> = RwSignal::new(None);
     // Bytes of the last version vector we confirmed with the server.
     let synced_vv: RwSignal<Vec<u8>> = RwSignal::new(Vec::new());
     // Incremented on every local mutation; debounce tasks capture it at
@@ -458,6 +460,8 @@ pub fn SpecBlockEditor(
         dirty,
         loro_doc,
     );
+    // sync_error is a prop; keep it in the suppression list so the SSR build
+    // does not warn about it being unused (all reads are hydrate-only).
 
     // ── Initial load ──────────────────────────────────────────────────────────
 
@@ -872,41 +876,6 @@ pub fn SpecBlockEditor(
 
     view! {
         <div class="spec-block-editor">
-
-            // ── Status indicator ──────────────────────────────────────────────
-            {move || {
-                if let Some(err) = sync_error.get() {
-                    view! {
-                        <div class="notification is-danger is-light mb-3">
-                            <strong>"Sync error: "</strong>
-                            {err}
-                            <button
-                                class="button is-small is-danger is-outlined ml-3"
-                                on:click=move |_| {
-                                    sync_error.set(None);
-                                    #[cfg(feature = "hydrate")]
-                                    do_sync();
-                                }
-                            >
-                                "Retry"
-                            </button>
-                        </div>
-                    }
-                    .into_any()
-                } else if !loaded.get() {
-                    view! {
-                        <p class="help is-info mb-2">"Loading\u{2026}"</p>
-                    }
-                    .into_any()
-                } else if syncing.get() {
-                    view! {
-                        <p class="help is-info mb-2">"Saving\u{2026}"</p>
-                    }
-                    .into_any()
-                } else {
-                    view! { <span /> }.into_any()
-                }
-            }}
 
             // Insert bar above all blocks.
             <InsertBar

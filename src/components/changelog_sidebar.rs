@@ -196,6 +196,7 @@ pub fn compute_changelog(initial: &[SpecBlock], current: &[SpecBlock]) -> Vec<Ch
 pub fn ChangelogSidebar(
     initial_blocks: Vec<SpecBlock>,
     blocks: Signal<Vec<SpecBlock>>,
+    sync_error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let initial_blocks = StoredValue::new(initial_blocks);
 
@@ -309,6 +310,21 @@ pub fn ChangelogSidebar(
                             view! { <span /> }.into_any()
                         }
                     }}
+                    <Show when=move || sync_error.get().is_some()>
+                        <button
+                            title=move || {
+                                sync_error
+                                    .get()
+                                    .unwrap_or_else(|| "Sync error".to_string())
+                            }
+                            style="border: none; background: none; cursor: pointer; \
+                                   padding: 0 3px; color: #ef4444; font-size: 0.8rem; \
+                                   line-height: 1; flex-shrink: 0;"
+                            on:click=move |_| sync_error.set(None)
+                        >
+                            "⚠"
+                        </button>
+                    </Show>
                     <button
                         title="Collapse changelog"
                         style="border: none; background: none; cursor: pointer; \

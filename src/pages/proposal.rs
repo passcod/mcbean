@@ -406,6 +406,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                     // r[impl edit.reorder]
                                                     // r[impl edit.delete]
                                                     let blocks_out = RwSignal::new(Vec::<SpecBlock>::new());
+                                                    let sync_error: RwSignal<Option<String>> = RwSignal::new(None);
                                                     let sidebar_title_clone = sidebar_title.clone();
                                                     view! {
                                                         <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
@@ -420,6 +421,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                                 <SpecBlockEditor
                                                                     proposal_id=p.id
                                                                     blocks_out=blocks_out
+                                                                    sync_error=sync_error
                                                                 />
                                                             </div>
                                                             // r[impl proposal.diff.semantic]
@@ -431,6 +433,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                                             <ChangelogSidebar
                                                                                 initial_blocks=initial
                                                                                 blocks=Signal::from(blocks_out)
+                                                                                sync_error=sync_error
                                                                             />
                                                                         }
                                                                     })
