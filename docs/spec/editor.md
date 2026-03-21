@@ -21,16 +21,7 @@ It is not required to support creating or renaming files.
 
 r[view.render]
 McBean MUST render Tracey spec files as structured, human-readable documents.
-
-r[view.modes.overview]
-McBean MUST provide two view modes: a Reader view and a Developer view.
-
-r[view.modes.reader]
-Reader view is the default.
-Raw Markdown syntax and rule ID markers MUST NOT be visible in Reader view.
-
-r[view.modes.developer]
-Developer view exposes rule ID badges alongside each rule, with affordances for copying IDs and viewing code reference counts.
+Rule IDs MUST be visible alongside each rule, rendered in a visually insignificant style that does not distract from the prose content.
 
 r[view.nav]
 McBean MUST provide navigation within a spec, allowing users to jump to sections and rules directly.
@@ -48,7 +39,7 @@ Answers from the query interface MUST include references to the specific rules t
 Activating a rule reference MUST scroll the spec to that rule and highlight it.
 
 r[view.query.readonly]
-The query interface in Reader view MUST be strictly read-only.
+The query interface in the default view MUST be strictly read-only.
 It MUST NOT be possible to initiate or modify a proposal from within the query interface.
 
 r[view.query.preview]
@@ -56,28 +47,41 @@ McBean MUST allow the query interface to optionally include the content of open 
 
 ## Rule IDs
 
-r[ids.derived]
-Rule IDs MUST be automatically derived at the time a rule is created, from the heading hierarchy and a slug of the rule's initial text.
-Users MUST NOT be required to supply or understand rule IDs during normal editing.
+r[ids.provisional]
+When a new rule is added during editing, it MUST immediately be assigned a provisional ID.
+A provisional ID consists of a randomly generated hex string placed under the relevant heading hierarchy, with a `+0` version suffix (e.g. `r[security.3f8a2c1b+0]`).
+Provisional IDs are placeholders only and are not considered stable.
 
-r[ids.frozen]
-Once assigned, a rule ID MUST NOT change automatically due to subsequent edits to the rule's text or position.
-IDs are frozen at creation.
+r[ids.user-supplied]
+A user MAY explicitly supply a slug for a new rule's ID at any point before the proposal is finalised.
+A user-supplied slug MUST be used as-is during finalisation and MUST NOT be replaced by the LLM.
+
+r[ids.finalise-phase]
+When a proposal is marked as ready for review, McBean MUST run a finalisation phase before the proposal is submitted.
+During finalisation, the full spec edit content — including all surrounding context — MUST be passed to an LLM for ID assignment.
+The LLM MUST NOT modify any spec prose or structure during this phase.
+
+r[ids.finalise-new]
+During finalisation, every rule that still carries a provisional ID MUST be assigned a final ID by the LLM.
+Final IDs MUST be derived from the rule's content and its position in the heading hierarchy, producing a concise, meaningful slug.
+
+r[ids.finalise-existing]
+During finalisation, every existing rule whose text was modified MUST be evaluated by the LLM to determine whether its current ID slug remains appropriate given the new content.
+If the LLM determines the slug no longer fits, it MUST propose a replacement slug.
+
+r[ids.finalise-approval]
+After finalisation, McBean MUST present the full set of proposed ID assignments and changes to the user for review before the proposal is submitted.
+The user MUST be able to approve, reject, or override any individual ID change.
+Feedback provided during this review MUST be passed back to the LLM for a revised pass if any changes are rejected.
+
+r[ids.no-collisions]
+Rule ID slugs MUST be unique within a spec.
+Collisions MUST NOT be resolved by appending numeric suffixes.
+If a collision is detected during finalisation, the LLM MUST be prompted to produce a distinct slug that meaningfully differentiates the rules by content.
 
 r[ids.stable-on-reorder]
-Reordering rules or sections MUST NOT alter any rule IDs.
+Reordering rules or sections MUST NOT alter any finalised rule IDs.
 Rule IDs are not positional.
-
-r[ids.collision]
-When a derived slug would collide with an existing sibling ID, McBean MUST resolve the collision automatically by appending a numeric suffix.
-
-r[ids.override]
-Users in Developer view MUST be able to manually set the slug component of a new rule's ID before the rule is confirmed.
-Once a rule is confirmed, its ID is frozen.
-
-r[ids.rename]
-Renaming a section MUST NOT automatically rename the IDs of rules within it.
-If a user explicitly requests an ID rename, McBean MUST display the number of code references affected before the rename is applied.
 
 r[ids.version-bump]
 When rule text is modified, McBean MUST automatically increment the version suffix of that rule's ID in the generated Markdown, conforming to Tracey's versioning convention.
@@ -92,7 +96,8 @@ r[edit.rule-text]
 Users MUST be able to edit the prose of any existing rule through a direct, inline editing interaction without any Markdown syntax being exposed.
 
 r[edit.add-rule]
-Users MUST be able to add a new rule within any section. The new rule MUST be assigned an ID automatically per r[ids.derived].
+Users MUST be able to add a new rule within any section.
+The new rule MUST immediately be assigned a provisional ID per r[ids.provisional].
 
 r[edit.add-section]
 Users MUST be able to add new sections and nested subsections.
@@ -100,11 +105,10 @@ Section hierarchy MUST be visually represented and editable.
 
 r[edit.reorder]
 Users MUST be able to reorder both rules and sections via drag-and-drop.
-Reordering MUST NOT affect any rule IDs per r[ids.stable-on-reorder].
+Reordering MUST NOT affect any finalised rule IDs per r[ids.stable-on-reorder].
 
 r[edit.delete]
 Users MUST be able to delete rules and sections.
-Deleting a rule or section that has known code references MUST surface a warning before the deletion is confirmed.
 
 r[edit.links.internal]
 The editor MUST provide autocomplete assistance for linking to other rules within the same spec.
