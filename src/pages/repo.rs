@@ -70,43 +70,66 @@ pub async fn get_repository(repo_id: i32) -> Result<RepoInfo, ServerFnError> {
 }
 
 #[cfg(feature = "ssr")]
-fn extract_headings(content: &str) -> Vec<HeadingEntry> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let n = line.chars().take_while(|&c| c == '#').count();
-            if n == 0 || n > 6 {
-                return None;
+fn slugify(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c
+            } else if c == ' ' {
+                '-'
+            } else {
+                '\0'
             }
-            let rest = &line[n..];
-            if !rest.starts_with(' ') {
-                return None;
-            }
-            let text = rest.trim().to_string();
-            if text.is_empty() {
-                return None;
-            }
-            let anchor = text
-                .to_lowercase()
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() {
-                        c
-                    } else if c == ' ' {
-                        '-'
-                    } else {
-                        '\0'
-                    }
-                })
-                .filter(|&c| c != '\0')
-                .collect();
-            Some(HeadingEntry {
-                level: n as u8,
-                text,
-                anchor,
-            })
         })
+        .filter(|&c| c != '\0')
         .collect()
+}
+
+#[cfg(feature = "ssr")]
+fn extract_headings(content: &str) -> Vec<HeadingEntry> {
+    // path holds (level, slug) for each ancestor heading currently in scope.
+    let mut path: Vec<(u8, String)> = Vec::new();
+    let mut entries = Vec::new();
+
+    for line in content.lines() {
+        let n = line.chars().take_while(|&c| c == '#').count();
+        if n == 0 || n > 6 {
+            continue;
+        }
+        let rest = &line[n..];
+        if !rest.starts_with(' ') {
+            continue;
+        }
+        let text = rest.trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+
+        let slug = slugify(&text);
+
+        // Pop any entries at the same level or deeper so the path only
+        // contains true ancestors of the current heading.
+        while path.last().map(|(l, _)| *l >= n as u8).unwrap_or(false) {
+            path.pop();
+        }
+        path.push((n as u8, slug));
+
+        // marq anchors are the full ancestor path joined with "--".
+        let anchor = path
+            .iter()
+            .map(|(_, s)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("--");
+
+        entries.push(HeadingEntry {
+            level: n as u8,
+            text,
+            anchor,
+        });
+    }
+
+    entries
 }
 
 #[server]
