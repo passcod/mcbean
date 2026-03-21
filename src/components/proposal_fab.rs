@@ -3,6 +3,39 @@ use leptos_router::hooks::use_navigate;
 
 use crate::pages::proposal::create_proposal;
 
+#[cfg(feature = "hydrate")]
+fn draft_key(repo_id: i32) -> String {
+    format!("mcbean_proposal_draft_{repo_id}")
+}
+
+#[cfg(feature = "hydrate")]
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+#[cfg(feature = "hydrate")]
+fn load_draft(repo_id: i32) -> Option<String> {
+    storage()?
+        .get_item(&draft_key(repo_id))
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "hydrate")]
+fn save_draft(repo_id: i32, value: &str) {
+    if let Some(s) = storage() {
+        let _ = s.set_item(&draft_key(repo_id), value);
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn clear_draft(repo_id: i32) {
+    if let Some(s) = storage() {
+        let _ = s.remove_item(&draft_key(repo_id));
+    }
+}
+
 // Feather-style "edit" pencil icon rendered via inner_html so SVG attributes
 // don't need to go through the view! macro attribute parser.
 const EDIT_ICON: &str = concat!(
@@ -27,8 +60,18 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
         async move { create_proposal(repo_id, t).await }
     });
 
+    // Restore draft from localStorage on client mount (Effects don't run on SSR).
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        if let Some(saved) = load_draft(repo_id) {
+            title.set(saved);
+        }
+    });
+
     Effect::new(move |_| {
         if let Some(Ok(new_id)) = create_action.value().get() {
+            #[cfg(feature = "hydrate")]
+            clear_draft(repo_id);
             navigate(
                 &format!("/repo/{}/proposal/{}", repo_id, new_id),
                 Default::default(),
@@ -74,7 +117,12 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                     placeholder="Title (optional)"
                     rows="4"
                     prop:value=move || title.get()
-                    on:input=move |ev| title.set(event_target_value(&ev))
+                    on:input=move |ev| {
+                        let val = event_target_value(&ev);
+                        #[cfg(feature = "hydrate")]
+                        save_draft(repo_id, &val);
+                        title.set(val);
+                    }
                 />
                 {move || {
                     create_action
