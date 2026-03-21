@@ -86,7 +86,13 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                         })
                 }}
                 <button
-                    class="button is-primary is-fullwidth"
+                    class=move || {
+                        if title.get().trim().is_empty() {
+                            "button is-primary is-fullwidth"
+                        } else {
+                            "button is-success is-fullwidth"
+                        }
+                    }
                     style="margin-top: 0.625rem;"
                     disabled=move || create_action.pending().get()
                     on:click=move |_| { create_action.dispatch(()); }
@@ -94,8 +100,10 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                     {move || {
                         if create_action.pending().get() {
                             "Creating…"
-                        } else {
+                        } else if title.get().trim().is_empty() {
                             "Create Proposal"
+                        } else {
+                            "Continue Proposal"
                         }
                     }}
                 </button>
