@@ -167,48 +167,43 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
         "parsed tracey config"
     );
 
-    // Fetch all spec files from GitHub
+    // Fetch all spec files from GitHub (handles both literal paths and globs)
     let mut spec_files_by_spec: Vec<(String, Vec<(String, String)>)> = Vec::new();
 
     for spec_def in &spec_defs {
-        let mut files = Vec::new();
-        for include_path in &spec_def.include {
-            tracing::info!(
-                spec = %spec_def.name,
-                path = %include_path,
-                "fetching spec file from GitHub"
-            );
-            match github
-                .get_file_contents(
-                    &repo_owner,
-                    &repo_name,
-                    include_path,
-                    &metadata.default_branch,
-                )
-                .await
-            {
-                Ok(fetched) => {
-                    tracing::info!(
-                        spec = %spec_def.name,
-                        path = %include_path,
-                        content_len = fetched.content.len(),
-                        "fetched spec file"
-                    );
-                    files.push((fetched.path, fetched.content));
-                }
-                Err(e) => {
-                    tracing::error!(
-                        spec = %spec_def.name,
-                        path = %include_path,
-                        error = %e,
-                        "failed to fetch spec file"
-                    );
-                    return Err(ServerFnError::new(format!(
-                        "Failed to fetch spec file {include_path}: {e}"
-                    )));
-                }
-            }
-        }
+        tracing::info!(
+            spec = %spec_def.name,
+            patterns = ?spec_def.include,
+            "resolving spec include patterns"
+        );
+        let fetched = github
+            .resolve_include_patterns(
+                &repo_owner,
+                &repo_name,
+                &metadata.default_branch,
+                &spec_def.include,
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    spec = %spec_def.name,
+                    error = %e,
+                    "failed to resolve spec include patterns"
+                );
+                ServerFnError::new(format!(
+                    "Failed to fetch spec files for {}: {e}",
+                    spec_def.name
+                ))
+            })?;
+
+        tracing::info!(
+            spec = %spec_def.name,
+            file_count = fetched.len(),
+            paths = ?fetched.iter().map(|f| &f.path).collect::<Vec<_>>(),
+            "resolved spec files"
+        );
+
+        let files = fetched.into_iter().map(|f| (f.path, f.content)).collect();
         spec_files_by_spec.push((spec_def.name.clone(), files));
     }
 

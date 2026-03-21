@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
+use globset::GlobBuilder;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -274,6 +275,81 @@ impl GitHubClient {
             });
         }
         decode_github_base64(&blob.content)
+    }
+
+    /// Resolve a list of include patterns (which may contain globs) against a
+    /// repository, returning the matched file paths and their blob SHAs.
+    ///
+    /// Literal paths are fetched directly. Patterns containing glob characters
+    /// (`*`, `?`, `[`) trigger a recursive tree fetch so they can be matched
+    /// against the full file listing.
+    #[instrument(skip(self, patterns), fields(owner, repo, git_ref, pattern_count = patterns.len()))]
+    pub async fn resolve_include_patterns(
+        &self,
+        owner: &str,
+        repo: &str,
+        git_ref: &str,
+        patterns: &[String],
+    ) -> Result<Vec<FetchedFile>, GitHubError> {
+        fn is_glob(pattern: &str) -> bool {
+            pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+        }
+
+        let has_globs = patterns.iter().any(|p| is_glob(p));
+
+        // Only fetch the tree if we actually need glob matching.
+        let tree: Option<HashMap<String, String>> = if has_globs {
+            let commit_sha = self.get_branch_head_sha(owner, repo, git_ref).await?;
+            // The branch endpoint gives the commit SHA; we need the tree SHA
+            // from the commit. Re-use get_tree_recursive with the commit SHA —
+            // the git/trees endpoint accepts commit SHAs too.
+            Some(self.get_tree_recursive(owner, repo, &commit_sha).await?)
+        } else {
+            None
+        };
+
+        let mut results = Vec::new();
+
+        for pattern in patterns {
+            if is_glob(pattern) {
+                let tree = tree.as_ref().expect("tree must be fetched for globs");
+                let glob = GlobBuilder::new(pattern)
+                    .literal_separator(true)
+                    .build()
+                    .map_err(|e| GitHubError::Api {
+                        status: 0,
+                        body: format!("invalid glob pattern {pattern:?}: {e}"),
+                    })?
+                    .compile_matcher();
+
+                let matched: Vec<_> = tree
+                    .iter()
+                    .filter(|(path, _)| glob.is_match(path.as_str()))
+                    .collect();
+
+                info!(
+                    pattern = %pattern,
+                    matched_count = matched.len(),
+                    "glob resolved"
+                );
+
+                for (path, blob_sha) in matched {
+                    let content = self.get_blob(owner, repo, blob_sha).await?;
+                    results.push(FetchedFile {
+                        path: path.clone(),
+                        content,
+                        blob_sha: blob_sha.clone(),
+                    });
+                }
+            } else {
+                let fetched = self
+                    .get_file_contents(owner, repo, pattern, git_ref)
+                    .await?;
+                results.push(fetched);
+            }
+        }
+
+        Ok(results)
     }
 }
 
