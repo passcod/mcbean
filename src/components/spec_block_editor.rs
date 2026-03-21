@@ -39,6 +39,31 @@ impl SpecBlock {
     }
 }
 
+// ── Revert operations ─────────────────────────────────────────────────────────
+
+/// A single-change revert request dispatched from the changelog sidebar.
+/// SpecBlockEditor applies the inverse operation as a local edit so that
+/// the UndoManager can undo it.
+// r[impl edit.undo]
+#[derive(Clone, Debug)]
+pub enum RevertOp {
+    /// Delete a block that was added in this proposal.
+    DeleteBlock { key: String },
+    /// Recreate a block that was deleted in this proposal.
+    /// `after_key` is the preceding surviving sibling (None = insert at top).
+    RecreateBlock {
+        kind: SpecBlockKind,
+        after_key: Option<String>,
+    },
+    /// Restore the original text of a modified block.
+    RestoreText { key: String, text: String },
+    /// Move a reordered block back to its original position.
+    MoveBlock {
+        key: String,
+        after_key: Option<String>,
+    },
+}
+
 // ── Sidebar data ──────────────────────────────────────────────────────────────
 
 pub fn blocks_to_sidebar_data(
@@ -1031,9 +1056,9 @@ pub fn SpecBlockEditor(
     /// Set to Some(message) on sync failure, cleared on success.
     sync_error: RwSignal<Option<String>>,
     /// r[impl edit.undo]
-    /// Set to Some(update_id) to revert the doc to the state at that revision.
+    /// Set to Some(op) to apply the inverse of a single changelog entry.
     /// SpecBlockEditor clears it after applying the revert.
-    revert_to: RwSignal<Option<i32>>,
+    revert_op: RwSignal<Option<RevertOp>>,
 ) -> impl IntoView {
     // Key of the block whose textarea is currently open.
     let editing_key: RwSignal<Option<String>> = RwSignal::new(None);
@@ -1078,7 +1103,7 @@ pub fn SpecBlockEditor(
         can_undo,
         can_redo,
         undo_mgr,
-        revert_to,
+        revert_op,
     );
     // sync_error is a prop; keep it in the suppression list so the SSR build
     // does not warn about it being unused (all reads are hydrate-only).
@@ -1386,56 +1411,72 @@ pub fn SpecBlockEditor(
     }
 
     // r[impl edit.undo]
-    // Watch for revert requests from the changelog history panel.  When
-    // revert_to becomes Some(update_id), fetch the doc state at that revision,
-    // replace the tree contents with it as local ops (so the UndoManager can
-    // undo the revert), then clear the signal.
+    // Watch for single-change revert requests from the changelog sidebar.
+    // Each RevertOp describes the inverse of one changelog entry and is applied
+    // as a local Loro mutation so it lands in the UndoManager.
     #[cfg(feature = "hydrate")]
     Effect::new(move |_| {
-        let Some(update_id) = revert_to.get() else {
+        let Some(op) = revert_op.get() else {
             return;
         };
-        leptos::task::spawn_local(async move {
-            match crate::pages::proposal::get_blocks_at_revision(proposal_id, update_id).await {
-                Ok(target_blocks) => {
-                    loro_doc.with_value(|doc| {
-                        use crate::components::loro_doc::{
-                            TREE_NAME, key_to_tree_id, set_text_content,
-                        };
-                        use loro::TreeParentId;
 
-                        let tree = doc.get_tree(TREE_NAME);
+        // Resolve an insert position from an optional after_key.  Returns the
+        // parent and child index to pass to `tree.create_at` / `tree.mov_to`.
+        let resolve_position =
+            |tree: &loro::LoroTree, after_key: Option<&str>| -> (loro::TreeParentId, usize) {
+                use crate::components::loro_doc::key_to_tree_id;
+                use loro::TreeParentId;
 
-                        // Find the parent of existing content nodes so new
-                        // nodes land in the same spec/file hierarchy slot.
-                        let target_parent = blocks_out.with_untracked(|bs| {
-                            bs.first()
-                                .and_then(|b| key_to_tree_id(&b.key))
-                                .and_then(|id| tree.parent(id))
-                                .filter(|p| {
-                                    !matches!(p, TreeParentId::Deleted | TreeParentId::Unexist)
-                                })
-                                .unwrap_or(TreeParentId::Root)
-                        });
-
-                        // Delete every current content node.
-                        let keys: Vec<String> = blocks_out
-                            .with_untracked(|bs| bs.iter().map(|b| b.key.clone()).collect());
-                        for key in &keys {
-                            if let Some(node_id) = key_to_tree_id(key) {
-                                tree.delete(node_id).ok();
+                if let Some(ak) = after_key {
+                    if let Some(after_id) = key_to_tree_id(ak) {
+                        let parent = tree
+                            .parent(after_id)
+                            .filter(|p| !matches!(p, TreeParentId::Deleted | TreeParentId::Unexist))
+                            .unwrap_or(TreeParentId::Root);
+                        let siblings = tree.children(parent).unwrap_or_default();
+                        let idx = siblings
+                            .iter()
+                            .position(|s| *s == after_id)
+                            .map(|i| i + 1)
+                            .unwrap_or(siblings.len());
+                        return (parent, idx);
+                    }
+                }
+                // No after_key or it was not found — insert at the top, using
+                // the first block's parent so we stay inside any spec/file
+                // wrapper nodes.
+                let first_key = blocks_out.with_untracked(|bs| bs.first().map(|b| b.key.clone()));
+                if let Some(fk) = first_key {
+                    if let Some(fid) = key_to_tree_id(&fk) {
+                        if let Some(p) = tree.parent(fid) {
+                            if !matches!(p, TreeParentId::Deleted | TreeParentId::Unexist) {
+                                return (p, 0);
                             }
                         }
+                    }
+                }
+                (TreeParentId::Root, 0)
+            };
 
-                        // Recreate from the target revision's blocks.
-                        for (idx, block) in target_blocks.iter().enumerate() {
-                            let Ok(node_id) = tree.create_at(target_parent, idx) else {
-                                continue;
-                            };
-                            let Ok(meta) = tree.get_meta(node_id) else {
-                                continue;
-                            };
-                            match &block.kind {
+        loro_doc.with_value(|doc| {
+            use crate::components::loro_doc::{TREE_NAME, key_to_tree_id, set_text_content};
+
+            let tree = doc.get_tree(TREE_NAME);
+
+            match op {
+                RevertOp::DeleteBlock { ref key } => {
+                    if let Some(node_id) = key_to_tree_id(key) {
+                        tree.delete(node_id).ok();
+                    }
+                }
+                RevertOp::RecreateBlock {
+                    ref kind,
+                    ref after_key,
+                } => {
+                    let (parent, idx) = resolve_position(&tree, after_key.as_deref());
+                    if let Ok(node_id) = tree.create_at(parent, idx) {
+                        if let Ok(meta) = tree.get_meta(node_id) {
+                            match kind {
                                 SpecBlockKind::Heading { level, text, .. } => {
                                     meta.insert("kind", "heading").ok();
                                     meta.insert("level", *level as i64).ok();
@@ -1452,18 +1493,30 @@ pub fn SpecBlockEditor(
                                 }
                             }
                         }
-                    });
-                    rebuild_blocks(None);
-                    commit_checkpoint();
-                    trigger_debounced_sync();
-                    revert_to.set(None);
+                    }
                 }
-                Err(e) => {
-                    sync_error.set(Some(format!("Revert failed: {e}")));
-                    revert_to.set(None);
+                RevertOp::RestoreText { ref key, ref text } => {
+                    if let Some(node_id) = key_to_tree_id(key) {
+                        if let Ok(meta) = tree.get_meta(node_id) {
+                            set_text_content(&meta, text);
+                        }
+                    }
+                }
+                RevertOp::MoveBlock {
+                    ref key,
+                    ref after_key,
+                } => {
+                    if let Some(from_id) = key_to_tree_id(key) {
+                        let (parent, idx) = resolve_position(&tree, after_key.as_deref());
+                        tree.mov_to(from_id, parent, idx).ok();
+                    }
                 }
             }
         });
+        rebuild_blocks(None);
+        commit_checkpoint();
+        trigger_debounced_sync();
+        revert_op.set(None);
     });
 
     let open_edit = move |key: String, text: String| {

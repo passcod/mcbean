@@ -1,12 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::pages::proposal::list_proposal_revisions;
-
 type WordSpans = Vec<(bool, String)>;
 
 use leptos::prelude::*;
 
-use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind};
+use crate::components::spec_block_editor::{RevertOp, SpecBlock, SpecBlockKind};
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
@@ -198,12 +196,11 @@ pub fn compute_changelog(initial: &[SpecBlock], current: &[SpecBlock]) -> Vec<Ch
 // r[impl edit.undo]
 #[component]
 pub fn ChangelogSidebar(
-    proposal_id: i32,
     initial_blocks: Vec<SpecBlock>,
     blocks: Signal<Vec<SpecBlock>>,
     sync_error: RwSignal<Option<String>>,
-    /// Set to Some(update_id) to request a revert; SpecBlockEditor clears it.
-    revert_to: RwSignal<Option<i32>>,
+    /// Set to Some(op) by this component; SpecBlockEditor applies and clears it.
+    revert_op: RwSignal<Option<RevertOp>>,
 ) -> impl IntoView {
     let initial_blocks = StoredValue::new(initial_blocks);
 
@@ -218,16 +215,6 @@ pub fn ChangelogSidebar(
     let drag_start_x = RwSignal::new(0.0f64);
     let drag_start_w = RwSignal::new(0.0f64);
 
-    // false = Changes tab, true = History tab
-    let show_history = RwSignal::new(false);
-
-    // r[impl edit.history]
-    // Loaded lazily when the History tab is first opened; client-side only.
-    let revisions = LocalResource::new(move || {
-        let _ = show_history.get(); // re-fetch whenever the tab is toggled back
-        list_proposal_revisions(proposal_id)
-    });
-
     let expanded: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
     let toggle_expanded = Callback::new(move |key: String| {
         expanded.update(|set| {
@@ -235,6 +222,59 @@ pub fn ChangelogSidebar(
                 set.insert(key);
             }
         });
+    });
+
+    // r[impl edit.undo]
+    // Construct a RevertOp from a changelog entry and dispatch it.
+    let on_revert = Callback::new(move |entry: ChangelogEntry| {
+        let op = match entry.kind {
+            ChangeKind::Added => RevertOp::DeleteBlock { key: entry.key },
+            ChangeKind::Deleted => {
+                let (original_kind, after_key) = initial_blocks.with_value(|init| {
+                    let kind = init
+                        .iter()
+                        .find(|b| b.key == entry.key)
+                        .map(|b| b.kind.clone())
+                        .unwrap_or(SpecBlockKind::Paragraph {
+                            text: entry.old_text.clone().unwrap_or_default(),
+                        });
+                    let current_keys: HashSet<String> =
+                        blocks.get().iter().map(|b| b.key.clone()).collect();
+                    let after = init
+                        .iter()
+                        .take_while(|b| b.key != entry.key)
+                        .filter(|b| current_keys.contains(&b.key))
+                        .last()
+                        .map(|b| b.key.clone());
+                    (kind, after)
+                });
+                RevertOp::RecreateBlock {
+                    kind: original_kind,
+                    after_key,
+                }
+            }
+            ChangeKind::Modified => RevertOp::RestoreText {
+                key: entry.key,
+                text: entry.old_text.unwrap_or_default(),
+            },
+            ChangeKind::Reordered => {
+                let after_key = initial_blocks.with_value(|init| {
+                    let current_keys: HashSet<String> =
+                        blocks.get().iter().map(|b| b.key.clone()).collect();
+                    init.iter()
+                        .take_while(|b| b.key != entry.key)
+                        .filter(|b| current_keys.contains(&b.key))
+                        .last()
+                        .map(|b| b.key.clone())
+                });
+                RevertOp::MoveBlock {
+                    key: entry.key,
+                    after_key,
+                }
+            }
+            ChangeKind::VersionBump => return,
+        };
+        revert_op.set(Some(op));
     });
 
     view! {
@@ -303,31 +343,16 @@ pub fn ChangelogSidebar(
                        background: #fafafa; border-left: 1px solid #e5e7eb; \
                        transition: width 0.15s ease;"
             >
-                // Header row: tab buttons + badges + controls.
+                // Header row.
                 <div style="display: flex; align-items: center; gap: 0.25rem; \
                             padding: 0.4rem 0.5rem; border-bottom: 1px solid #e5e7eb; \
                             flex-shrink: 0; min-width: 0;">
-                    // Tab buttons.
-                    <button
-                        class="changelog-tab-btn"
-                        class:changelog-tab-btn--active=move || !show_history.get()
-                        on:click=move |_| show_history.set(false)
-                    >
+                    <span style="flex: 1; font-size: 0.75rem; font-weight: 600; \
+                                 color: #111827; white-space: nowrap; overflow: hidden; \
+                                 text-overflow: ellipsis;">
                         "Changes"
-                    </button>
-                    <button
-                        class="changelog-tab-btn"
-                        class:changelog-tab-btn--active=move || show_history.get()
-                        on:click=move |_| show_history.set(true)
-                    >
-                        "History"
-                    </button>
-
-                    // Change count badge — only visible on the Changes tab.
+                    </span>
                     {move || {
-                        if show_history.get() {
-                            return view! { <span /> }.into_any();
-                        }
                         let n = entries.get().len();
                         if n > 0 {
                             view! {
@@ -369,144 +394,61 @@ pub fn ChangelogSidebar(
                     </button>
                 </div>
 
-                // Body: Changes diff or History revision list.
+                // Scrollable entry list.
                 <div style="overflow-y: auto; flex: 1;">
-                    <Show
-                        when=move || !show_history.get()
-                        fallback=move || {
-                            // r[impl edit.history]
-                            // r[impl edit.undo]
-                            let reverting = move || revert_to.get().is_some();
-                            view! {
-                                <Suspense fallback=move || view! {
-                                    <div style="padding: 0.75rem; font-size: 0.75rem; \
-                                                color: #9ca3af;">
-                                        "Loading…"
-                                    </div>
-                                }>
-                                    {move || {
-                                        revisions.get().map(|result| match result {
-                                            Err(e) => view! {
-                                                <div style="padding: 0.75rem; font-size: 0.75rem; \
-                                                            color: #ef4444;">
-                                                    {format!("Error: {e}")}
-                                                </div>
-                                            }.into_any(),
-                                            Ok(revs) if revs.is_empty() => view! {
-                                                <div style="padding: 0.75rem; font-size: 0.75rem; \
-                                                            color: #9ca3af; font-style: italic;">
-                                                    "No saved revisions yet."
-                                                </div>
-                                            }.into_any(),
-                                            Ok(revs) => {
-                                                let count = revs.len();
-                                                view! {
-                                                    <div style="padding: 0.4rem 0;">
-                                                        {revs.into_iter().enumerate().map(|(i, rev)| {
-                                                            let rev = StoredValue::new(rev);
-                                                            let label = move || format!(
-                                                                "Rev {}/{}",
-                                                                i + 1,
-                                                                count,
-                                                            );
-                                                            view! {
-                                                                <div class="revision-entry">
-                                                                    <div class="revision-entry-meta">
-                                                                        <span class="revision-entry-label">
-                                                                            {label}
-                                                                        </span>
-                                                                        <span class="revision-entry-user">
-                                                                            {move || rev.get_value().user_name.clone()}
-                                                                        </span>
-                                                                        <span class="revision-entry-time">
-                                                                            {move || rev.get_value().created_at.clone()}
-                                                                        </span>
-                                                                    </div>
-                                                                    <button
-                                                                        class="revision-revert-btn"
-                                                                        disabled=reverting
-                                                                        title="Revert document to this revision"
-                                                                        on:click=move |_| {
-                                                                            revert_to.set(Some(
-                                                                                rev.get_value().update_id,
-                                                                            ));
-                                                                        }
-                                                                    >
-                                                                        {move || {
-                                                                            if reverting() && revert_to.get()
-                                                                                == Some(rev.get_value().update_id)
-                                                                            {
-                                                                                "Reverting…"
-                                                                            } else {
-                                                                                "Revert to here"
-                                                                            }
-                                                                        }}
-                                                                    </button>
-                                                                </div>
-                                                            }
-                                                        }).collect::<Vec<_>>()}
-                                                    </div>
-                                                }.into_any()
-                                            }
-                                        })
-                                    }}
-                                </Suspense>
-                            }
-                        }
-                    >
-                        // Changes tab body.
-                        {move || {
-                            let all = entries.get();
-                            if all.is_empty() {
-                                return view! {
-                                    <div style="padding: 0.75rem; font-size: 0.75rem; \
-                                                color: #9ca3af; font-style: italic;">
-                                        "No changes yet."
-                                    </div>
-                                }
-                                .into_any();
-                            }
-
-                            // r[impl proposal.diff.version-bumps]
-                            let (content, bumps): (Vec<_>, Vec<_>) = all
-                                .into_iter()
-                                .partition(|e| e.kind != ChangeKind::VersionBump);
-
-                            let show_bumps = !bumps.is_empty();
-
-                            view! {
-                                <div style="padding: 0.4rem 0;">
-                                    <ChangelogEntryList
-                                        entries=content
-                                        expanded=expanded
-                                        toggle_expanded=toggle_expanded
-                                    />
-                                    {if show_bumps {
-                                        view! {
-                                            <div>
-                                                <div style="margin-top: 0.75rem; \
-                                                            padding: 0.2rem 0.75rem; \
-                                                            font-size: 0.65rem; font-weight: 700; \
-                                                            text-transform: uppercase; \
-                                                            letter-spacing: 0.05em; color: #9ca3af;">
-                                                    "Version bumps"
-                                                </div>
-                                                <ChangelogEntryList
-                                                    entries=bumps
-                                                    expanded=expanded
-                                                    toggle_expanded=toggle_expanded
-                                                />
-                                            </div>
-                                        }
-                                        .into_any()
-                                    } else {
-                                        view! { <span /> }.into_any()
-                                    }}
+                    {move || {
+                        let all = entries.get();
+                        if all.is_empty() {
+                            return view! {
+                                <div style="padding: 0.75rem; font-size: 0.75rem; \
+                                            color: #9ca3af; font-style: italic;">
+                                    "No changes yet."
                                 </div>
                             }
-                            .into_any()
-                        }}
-                    </Show>
+                            .into_any();
+                        }
+
+                        // r[impl proposal.diff.version-bumps]
+                        let (content, bumps): (Vec<_>, Vec<_>) = all
+                            .into_iter()
+                            .partition(|e| e.kind != ChangeKind::VersionBump);
+
+                        let show_bumps = !bumps.is_empty();
+
+                        view! {
+                            <div style="padding: 0.4rem 0;">
+                                <ChangelogEntryList
+                                    entries=content
+                                    expanded=expanded
+                                    toggle_expanded=toggle_expanded
+                                    on_revert=on_revert
+                                />
+                                {if show_bumps {
+                                    view! {
+                                        <div>
+                                            <div style="margin-top: 0.75rem; \
+                                                        padding: 0.2rem 0.75rem; \
+                                                        font-size: 0.65rem; font-weight: 700; \
+                                                        text-transform: uppercase; \
+                                                        letter-spacing: 0.05em; color: #9ca3af;">
+                                                "Version bumps"
+                                            </div>
+                                            <ChangelogEntryList
+                                                entries=bumps
+                                                expanded=expanded
+                                                toggle_expanded=toggle_expanded
+                                                on_revert=on_revert
+                                            />
+                                        </div>
+                                    }
+                                    .into_any()
+                                } else {
+                                    view! { <span /> }.into_any()
+                                }}
+                            </div>
+                        }
+                        .into_any()
+                    }}
                 </div>
             </aside>
         </div>
@@ -520,6 +462,7 @@ fn ChangelogEntryList(
     entries: Vec<ChangelogEntry>,
     expanded: RwSignal<HashSet<String>>,
     toggle_expanded: Callback<String>,
+    on_revert: Callback<ChangelogEntry>,
 ) -> impl IntoView {
     view! {
         <div>
@@ -558,6 +501,27 @@ fn ChangelogEntryList(
                                 <span class="changelog-entry-label">
                                     {move || label.get_value()}
                                 </span>
+                                // r[impl edit.undo]
+                                <Show when=move || {
+                                    kind.get_value() != ChangeKind::VersionBump
+                                }>
+                                    <button
+                                        class="changelog-revert-btn"
+                                        title="Revert this change"
+                                        on:click=move |e| {
+                                            e.stop_propagation();
+                                            on_revert.run(ChangelogEntry {
+                                                key: key.get_value(),
+                                                kind: kind.get_value(),
+                                                label: label.get_value(),
+                                                old_text: old_text.get_value(),
+                                                new_text: new_text.get_value(),
+                                            });
+                                        }
+                                    >
+                                        "↩"
+                                    </button>
+                                </Show>
                                 <Show when=move || has_diff>
                                     <span class="changelog-expand-icon">
                                         {move || if is_expanded() { "▴" } else { "▾" }}

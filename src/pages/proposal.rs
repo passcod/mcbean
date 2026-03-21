@@ -4,16 +4,9 @@ use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    ChangelogSidebar, FinaliseFab, SpecBlock, SpecBlockEditor, SpecSidebar, blocks_to_sidebar_data,
+    ChangelogSidebar, FinaliseFab, RevertOp, SpecBlock, SpecBlockEditor, SpecSidebar,
+    blocks_to_sidebar_data,
 };
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RevisionInfo {
-    pub update_id: i32,
-    pub user_name: String,
-    /// ISO-8601 timestamp string, formatted server-side.
-    pub created_at: String,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProposalDetail {
@@ -236,111 +229,6 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
-// r[impl edit.history]
-#[server]
-pub async fn list_proposal_revisions(proposal_id: i32) -> Result<Vec<RevisionInfo>, ServerFnError> {
-    use diesel::prelude::*;
-
-    let pool =
-        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-
-    conn.interact(move |conn| {
-        use crate::db::schema::{proposal_loro_updates, users};
-
-        let rows: Vec<(i32, Option<String>, String, jiff_diesel::Timestamp)> =
-            proposal_loro_updates::table
-                .inner_join(users::table)
-                .filter(proposal_loro_updates::proposal_id.eq(proposal_id))
-                .order(proposal_loro_updates::id.asc())
-                .select((
-                    proposal_loro_updates::id,
-                    users::display_name,
-                    users::email,
-                    proposal_loro_updates::created_at,
-                ))
-                .load(conn)?;
-
-        Ok(rows
-            .into_iter()
-            .map(|(id, display_name, email, ts)| {
-                // Trim ISO-8601 to "YYYY-MM-DDTHH:MM" for compact display.
-                let full = ts.to_jiff().to_string();
-                let created_at = full.get(..16).unwrap_or(&full).to_string();
-                RevisionInfo {
-                    update_id: id,
-                    user_name: display_name.unwrap_or(email),
-                    created_at,
-                }
-            })
-            .collect())
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
-}
-
-// r[impl edit.undo]
-#[server]
-pub async fn get_blocks_at_revision(
-    proposal_id: i32,
-    up_to_update_id: i32,
-) -> Result<Vec<SpecBlock>, ServerFnError> {
-    use diesel::prelude::*;
-
-    use crate::components::loro_doc::{loro_doc_to_blocks, reconstruct_doc};
-    use crate::components::spec_block_editor::resolve_base_snapshot_id;
-
-    let pool =
-        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-
-    let (base_bytes, update_rows) = conn
-        .interact(move |conn| {
-            use crate::db::schema::{proposal_loro_updates, spec_snapshots};
-
-            let sid = match resolve_base_snapshot_id(proposal_id, conn) {
-                Ok(sid) => sid,
-                Err(diesel::result::Error::NotFound) => {
-                    return Ok::<_, diesel::result::Error>((Vec::new(), Vec::new()));
-                }
-                Err(e) => return Err(e),
-            };
-
-            let base_bytes: Vec<u8> = spec_snapshots::table
-                .find(sid)
-                .select(spec_snapshots::loro_bytes)
-                .first(conn)?;
-
-            let update_rows: Vec<Vec<u8>> = proposal_loro_updates::table
-                .filter(proposal_loro_updates::proposal_id.eq(proposal_id))
-                .filter(proposal_loro_updates::id.le(up_to_update_id))
-                .order(proposal_loro_updates::id.asc())
-                .select(proposal_loro_updates::update_bytes)
-                .load(conn)?;
-
-            Ok((base_bytes, update_rows))
-        })
-        .await
-        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
-        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
-
-    if base_bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let doc = reconstruct_doc(&base_bytes, &update_rows)
-        .map_err(|e| ServerFnError::new(format!("reconstruct: {e}")))?;
-
-    Ok(loro_doc_to_blocks(&doc))
-}
-
 // r[impl proposal.submit]
 // r[impl ids.finalise-phase]
 #[server]
@@ -521,7 +409,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                     let blocks_out = RwSignal::new(Vec::<SpecBlock>::new());
                                                     let sync_error: RwSignal<Option<String>> = RwSignal::new(None);
                                                     // r[impl edit.undo]
-                                                    let revert_to: RwSignal<Option<i32>> = RwSignal::new(None);
+                                                    let revert_op: RwSignal<Option<RevertOp>> = RwSignal::new(None);
                                                     let sidebar_title_clone = sidebar_title.clone();
                                                     view! {
                                                         <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
@@ -537,7 +425,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                                     proposal_id=p.id
                                                                     blocks_out=blocks_out
                                                                     sync_error=sync_error
-                                                                    revert_to=revert_to
+                                                                    revert_op=revert_op
                                                                 />
                                                             </div>
                                                             // r[impl proposal.diff.semantic]
@@ -547,11 +435,10 @@ pub fn ProposalPage() -> impl IntoView {
                                                                         let initial = result.unwrap_or_default();
                                                                         view! {
                                                                             <ChangelogSidebar
-                                                                                proposal_id=p.id
                                                                                 initial_blocks=initial
                                                                                 blocks=Signal::from(blocks_out)
                                                                                 sync_error=sync_error
-                                                                                revert_to=revert_to
+                                                                                revert_op=revert_op
                                                                             />
                                                                         }
                                                                     })
