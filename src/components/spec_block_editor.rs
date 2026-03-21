@@ -945,10 +945,9 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                                 // r[impl edit.delete]
                                 <button
                                     class="spec-action-btn spec-action-btn--delete"
-                                    title="Delete block"
                                     on:click=move |_| delete_block(key.get_value())
                                 >
-                                    "✕"
+                                    "Delete"
                                 </button>
                             </div>
 
