@@ -2,6 +2,9 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Sentinel used as the drop_key for the insert bar above all blocks.
+const TOP_DROP_KEY: &str = "^^top";
+
 // ── Data model ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -58,7 +61,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                     "<h{level} id=\"{id}\">{text}</h{level}>",
                     level = h.level,
                     id = h.id,
-                    text = html_escape_attr(&h.title),
+                    text = html_escape(&h.title),
                 );
                 blocks.push(SpecBlock {
                     key,
@@ -71,8 +74,6 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
             }
 
             DocElement::Req(r) => {
-                // r.raw is the content after the r[id] marker line, possibly
-                // with `> ` blockquote prefixes.
                 let prose = strip_blockquote_prefixes(&r.raw).trim().to_string();
                 blocks.push(SpecBlock {
                     key,
@@ -95,7 +96,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                 blocks.push(SpecBlock {
                     key,
                     kind: SpecBlockKind::Paragraph { text: text.clone() },
-                    html: format!("<p>{}</p>", html_escape_attr(&text)),
+                    html: format!("<p>{}</p>", html_escape(&text)),
                 });
             }
         }
@@ -136,7 +137,7 @@ pub fn serialize_blocks(blocks: &[SpecBlock]) -> String {
 }
 
 #[cfg(feature = "ssr")]
-fn html_escape_attr(s: &str) -> String {
+fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -155,7 +156,7 @@ fn strip_blockquote_prefixes(raw: &str) -> String {
         .join("\n")
 }
 
-// ── Key generation ────────────────────────────────────────────────────────────
+// ── Key / ID generation ───────────────────────────────────────────────────────
 
 static BLOCK_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -173,25 +174,27 @@ pub fn next_provisional_id() -> String {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-/// Structured WYSIWYG-style editor for a list of spec blocks.
-///
-/// `on_save` is called with the full updated block list when the user
-/// confirms their changes. The parent is responsible for serialising and
-/// persisting the result.
 #[component]
 pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>) -> impl IntoView {
     let blocks = RwSignal::new(blocks);
 
-    // Key of the block currently open in the textarea editor.
+    // Key of the block whose textarea is currently open.
     let editing_key: RwSignal<Option<String>> = RwSignal::new(None);
-    // Live text in the textarea.
+    // Live content of the open textarea.
     let edit_draft = RwSignal::new(String::new());
 
-    // HTML5 drag-and-drop state.
+    // HTML5 drag-and-drop: which block is being dragged, which insert bar is the drop target.
     let drag_key: RwSignal<Option<String>> = RwSignal::new(None);
-    let drag_over_key: RwSignal<Option<String>> = RwSignal::new(None);
+    let drag_over_bar: RwSignal<Option<String>> = RwSignal::new(None);
 
-    // Commit the textarea text back into the block list and close the editor.
+    // Opens the textarea for a block, seeding the draft from its current text.
+    let open_edit = move |key: String, text: String| {
+        edit_draft.set(text);
+        editing_key.set(Some(key));
+    };
+
+    // Writes the textarea draft back into the block list and closes the editor.
+    // Called on textarea blur — no explicit "Done" button needed.
     let commit_edit = move || {
         let Some(key) = editing_key.get_untracked() else {
             return;
@@ -204,20 +207,16 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                     SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
                     SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
                 }
-                // Invalidate stale HTML; display will fall back to plain text
-                // until the parent re-renders after a full save.
+                // Clear stale rendered HTML; display falls back to plain text
+                // until the user saves and the server re-renders.
                 b.html.clear();
             }
         });
         editing_key.set(None);
     };
 
-    let cancel_edit = move || editing_key.set(None);
-
-    let open_edit = move |key: String, text: String| {
-        edit_draft.set(text);
-        editing_key.set(Some(key));
-    };
+    // Closes the editor without writing the draft, reverting the visible text.
+    let revert_edit = move || editing_key.set(None);
 
     // r[impl edit.delete]
     let delete_block = move |key: String| {
@@ -227,39 +226,54 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
         blocks.update(|list| list.retain(|b| b.key != key));
     };
 
-    // Insert a new rule immediately after `after_key`, or at the end.
-    // r[impl edit.add-rule]
-    let insert_rule_after = move |after_key: Option<String>| {
-        let new_key = next_block_key();
-        let new_block = SpecBlock {
-            key: new_key.clone(),
-            // r[impl ids.provisional]
-            kind: SpecBlockKind::Rule {
-                id: next_provisional_id(),
-                text: String::new(),
-            },
-            html: String::new(),
-        };
+    // r[impl edit.reorder]
+    // Moves the dragged block to the position indicated by drop_key.
+    // drop_key is either TOP_DROP_KEY (insert at position 0) or a block key
+    // meaning "insert after this block".
+    let handle_drop = move |from_key: String, drop_key: String| {
+        if from_key == drop_key {
+            drag_key.set(None);
+            drag_over_bar.set(None);
+            return;
+        }
         blocks.update(|list| {
-            let pos = insertion_pos(list, after_key.as_deref());
-            list.insert(pos, new_block);
+            let Some(fi) = list.iter().position(|b| b.key == from_key) else {
+                return;
+            };
+            let item = list.remove(fi);
+            let pos = if drop_key == TOP_DROP_KEY {
+                0
+            } else {
+                list.iter()
+                    .position(|b| b.key == drop_key)
+                    .map(|i| i + 1)
+                    .unwrap_or(list.len())
+            };
+            list.insert(pos, item);
         });
-        open_edit(new_key, String::new());
+        drag_key.set(None);
+        drag_over_bar.set(None);
     };
 
+    // Inserts a new block at the position given by after_key (same convention as drop_key).
+    // r[impl edit.add-rule]
     // r[impl edit.add-section]
-    let insert_heading_after = move |after_key: Option<String>, level: u8| {
+    let insert_block = move |after_key: String, kind: SpecBlockKind| {
         let new_key = next_block_key();
         let new_block = SpecBlock {
             key: new_key.clone(),
-            kind: SpecBlockKind::Heading {
-                level,
-                text: String::new(),
-            },
+            kind,
             html: String::new(),
         };
         blocks.update(|list| {
-            let pos = insertion_pos(list, after_key.as_deref());
+            let pos = if after_key == TOP_DROP_KEY {
+                0
+            } else {
+                list.iter()
+                    .position(|b| b.key == after_key)
+                    .map(|i| i + 1)
+                    .unwrap_or(list.len())
+            };
             list.insert(pos, new_block);
         });
         open_edit(new_key, String::new());
@@ -267,114 +281,113 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
 
     view! {
         <div class="spec-block-editor">
-            // Insert bar at the very top of the list.
+            // Insert bar above all blocks.
             <InsertBar
-                on_insert_rule=Callback::new(move |_| insert_rule_after(None))
-                on_insert_heading=Callback::new(move |level| insert_heading_after(None, level))
+                drop_key=TOP_DROP_KEY.to_string()
+                drag_key=drag_key
+                drag_over_bar=drag_over_bar
+                on_drop_block=Callback::new(move |(from, to)| handle_drop(from, to))
+                on_insert_rule=Callback::new(move |_| {
+                    insert_block(
+                        TOP_DROP_KEY.to_string(),
+                        SpecBlockKind::Rule {
+                            id: next_provisional_id(),
+                            text: String::new(),
+                        },
+                    )
+                })
+                on_insert_heading=Callback::new(move |lvl: u8| {
+                    insert_block(
+                        TOP_DROP_KEY.to_string(),
+                        SpecBlockKind::Heading { level: lvl, text: String::new() },
+                    )
+                })
             />
 
             <For
                 each=move || blocks.get()
                 key=|b| b.key.clone()
                 children=move |block| {
-                    // Stable, Copy handles for per-block identity and initial values.
                     let key = StoredValue::new(block.key.clone());
-                    let init_text = StoredValue::new(block.edit_text().to_owned());
-                    let init_html = StoredValue::new(block.html.clone());
 
-                    // Per-block metadata (fixed for the lifetime of this render).
-                    let rule_id: StoredValue<Option<String>> = StoredValue::new(
-                        if let SpecBlockKind::Rule { id, .. } = &block.kind {
+                    // These are stable for the lifetime of an existing block.
+                    let rule_id: StoredValue<Option<String>> =
+                        StoredValue::new(if let SpecBlockKind::Rule { id, .. } = &block.kind {
                             Some(id.clone())
                         } else {
                             None
-                        },
-                    );
-                    let heading_level: Option<u8> =
-                        if let SpecBlockKind::Heading { level, .. } = &block.kind {
-                            Some(*level)
-                        } else {
-                            None
-                        };
+                        });
+                    let heading_level: StoredValue<Option<u8>> =
+                        StoredValue::new(
+                            if let SpecBlockKind::Heading { level, .. } = &block.kind {
+                                Some(*level)
+                            } else {
+                                None
+                            },
+                        );
 
-                    let placeholder = rule_id.with_value(|r| {
-                        if r.is_some() {
-                            "Rule prose…"
-                        } else if heading_level.is_some() {
-                            "Heading text…"
-                        } else {
-                            "Paragraph text…"
-                        }
-                    });
+                    // Reactive read of this block's current text and HTML from
+                    // the shared signal, so the display stays accurate after edits.
+                    let block_html = move || {
+                        blocks.with(|list| {
+                            list.iter()
+                                .find(|b| b.key == key.get_value())
+                                .map(|b| b.html.clone())
+                                .unwrap_or_default()
+                        })
+                    };
+                    let block_text = move || {
+                        blocks.with(|list| {
+                            list.iter()
+                                .find(|b| b.key == key.get_value())
+                                .map(|b| b.edit_text().to_owned())
+                                .unwrap_or_default()
+                        })
+                    };
 
-                    // Reactive predicates for this block's state.
                     let is_editing =
                         move || editing_key.get().as_deref() == Some(&key.get_value());
-                    let is_drag_over =
-                        move || drag_over_key.get().as_deref() == Some(&key.get_value());
                     let is_dragging =
                         move || drag_key.get().as_deref() == Some(&key.get_value());
+
+                    // Font styling for the textarea — headings get a matching size/weight
+                    // so the textarea fills approximately the same vertical space.
+                    let (ta_font_size, ta_font_weight) = match block.kind {
+                        SpecBlockKind::Heading { level: 1, .. } => ("2rem", "bold"),
+                        SpecBlockKind::Heading { level: 2, .. } => ("1.5rem", "bold"),
+                        SpecBlockKind::Heading { level: 3, .. } => ("1.25rem", "600"),
+                        SpecBlockKind::Heading { level: 4, .. } => ("1.1rem", "600"),
+                        _ => ("1rem", "normal"),
+                    };
 
                     view! {
                         <div
                             class="spec-block-wrapper"
-                            class:spec-block--drag-over=is_drag_over
                             class:spec-block--dragging=is_dragging
-                            draggable="true"
-                            on:dragstart=move |e| {
-                                e.stop_propagation();
-                                drag_key.set(Some(key.get_value()));
-                            }
-                            on:dragend=move |_| {
-                                drag_key.set(None);
-                                drag_over_key.set(None);
-                            }
-                            on:dragover=move |e| {
-                                e.prevent_default();
-                                drag_over_key.set(Some(key.get_value()));
-                            }
-                            on:dragleave=move |_| {
-                                drag_over_key.update(|k| {
-                                    if k.as_deref() == Some(&key.get_value()) {
-                                        *k = None;
-                                    }
-                                });
-                            }
-                            on:drop=move |e| {
-                                e.prevent_default();
-                                drag_over_key.set(None);
-                                let to = key.get_value();
-                                if let Some(from) = drag_key.get_untracked() {
-                                    drag_key.set(None);
-                                    if from != to {
-                                        // r[impl edit.reorder]
-                                        blocks.update(|list| {
-                                            if let Some(fi) =
-                                                list.iter().position(|b| b.key == from)
-                                            {
-                                                let item = list.remove(fi);
-                                                // Recalculate index after the removal.
-                                                let ti = list
-                                                    .iter()
-                                                    .position(|b| b.key == to)
-                                                    .unwrap_or(list.len());
-                                                list.insert(ti, item);
-                                            }
-                                        });
-                                    }
-                                }
-                            }
+                            // Allow dragging over the block body without showing
+                            // the "forbidden" cursor — the InsertBars are the real targets.
+                            on:dragover=move |e| e.prevent_default()
                         >
-                            // ── Block header ──────────────────────────────────
+                            // ── Header row ───────────────────────────────────
                             <div class="spec-block-header">
+                                // Only the handle is draggable; clicking the body opens the editor.
                                 <span
                                     class="spec-block-drag-handle"
                                     title="Drag to reorder"
+                                    draggable="true"
+                                    on:dragstart=move |ev| {
+                                        ev.stop_propagation();
+                                        drag_key.set(Some(key.get_value()));
+                                    }
+                                    on:dragend=move |_| {
+                                        drag_key.set(None);
+                                        drag_over_bar.set(None);
+                                    }
                                 >
                                     "⠿"
                                 </span>
 
-                                // Rule ID badge / heading level / paragraph marker.
+                                // Type badge.
                                 {move || {
                                     rule_id.with_value(|rid| {
                                         if let Some(id) = rid {
@@ -384,7 +397,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                                 </span>
                                             }
                                             .into_any()
-                                        } else if let Some(lvl) = heading_level {
+                                        } else if let Some(lvl) = heading_level.get_value() {
                                             view! {
                                                 <span class="spec-block-badge spec-block-badge--heading">
                                                     {format!("H{}", lvl)}
@@ -402,54 +415,47 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                     })
                                 }}
 
-                                <div class="spec-block-actions">
-                                    <Show when=move || !is_editing()>
-                                        <button
-                                            class="spec-action-btn"
-                                            title="Edit this block"
-                                            on:click=move |_| {
-                                                open_edit(
-                                                    key.get_value(),
-                                                    init_text.get_value(),
-                                                );
-                                            }
-                                        >
-                                            "Edit"
-                                        </button>
-                                    </Show>
-                                    // r[impl edit.delete]
-                                    <button
-                                        class="spec-action-btn spec-action-btn--delete"
-                                        title="Delete this block"
-                                        on:click=move |_| delete_block(key.get_value())
-                                    >
-                                        "✕"
-                                    </button>
-                                </div>
+                                // r[impl edit.delete]
+                                <button
+                                    class="spec-action-btn spec-action-btn--delete"
+                                    title="Delete block"
+                                    on:click=move |_| delete_block(key.get_value())
+                                >
+                                    "✕"
+                                </button>
                             </div>
 
                             // ── Block body ────────────────────────────────────
+                            // Show either the textarea (editing) or the rendered display (reading).
+                            // Clicking anywhere on the display opens the textarea for this block.
                             <Show
                                 when=is_editing
                                 fallback=move || {
-                                    let html = init_html.get_value();
-                                    let text = init_text.get_value();
-                                    let html_empty = html.is_empty();
+                                    let html = block_html();
+                                    let text = block_text();
+                                    let is_empty = html.is_empty() && text.is_empty();
                                     view! {
+                                        // r[impl edit.rule-text]
                                         <div
                                             class="spec-block-display"
-                                            class:spec-block-display--unsaved=html_empty
+                                            class:spec-block-display--empty=is_empty
+                                            title="Click to edit"
+                                            on:click=move |_| {
+                                                open_edit(key.get_value(), block_text());
+                                            }
                                         >
-                                            {if html_empty {
-                                                view! {
-                                                    <span class="spec-block-unsaved-text">
-                                                        {text}
-                                                    </span>
-                                                }
-                                                .into_any()
-                                            } else {
+                                            {if !html.is_empty() {
                                                 view! {
                                                     <div class="content" inner_html=html />
+                                                }
+                                                .into_any()
+                                            } else if !text.is_empty() {
+                                                view! { <span>{text}</span> }.into_any()
+                                            } else {
+                                                view! {
+                                                    <span class="spec-block-placeholder">
+                                                        "Click to add content…"
+                                                    </span>
                                                 }
                                                 .into_any()
                                             }}
@@ -458,55 +464,48 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                 }
                             >
                                 // r[impl edit.rule-text]
-                                <div class="spec-block-edit">
-                                    <textarea
-                                        class="textarea spec-block-textarea"
-                                        placeholder=placeholder
-                                        prop:value=move || edit_draft.get()
-                                        rows=5
-                                        on:input=move |ev| {
-                                            edit_draft.set(event_target_value(&ev));
+                                // The textarea inherits the block's font styling so its height
+                                // matches the displayed content as closely as possible.
+                                // autofocus fires when the element is dynamically mounted.
+                                // Blur commits; Escape reverts without saving.
+                                <textarea
+                                    class="spec-block-textarea"
+                                    autofocus=true
+                                    style:font-size=ta_font_size
+                                    style:font-weight=ta_font_weight
+                                    prop:value=move || edit_draft.get()
+                                    on:input=move |ev| edit_draft.set(event_target_value(&ev))
+                                    on:blur=move |_| commit_edit()
+                                    on:keydown=move |ev| {
+                                        if ev.key() == "Escape" {
+                                            revert_edit();
                                         }
-                                        on:keydown=move |ev| {
-                                            let key_name = ev.key();
-                                            if key_name == "Escape" {
-                                                cancel_edit();
-                                            } else if key_name == "Enter"
-                                                && (ev.ctrl_key() || ev.meta_key())
-                                            {
-                                                commit_edit();
-                                            }
-                                        }
-                                    />
-                                    <div class="spec-block-edit-btns">
-                                        <button
-                                            class="button is-small is-success"
-                                            on:click=move |_| commit_edit()
-                                        >
-                                            "Done"
-                                        </button>
-                                        <button
-                                            class="button is-small is-light"
-                                            on:click=move |_| cancel_edit()
-                                        >
-                                            "Cancel"
-                                        </button>
-                                        <span class="spec-block-edit-hint">
-                                            "Ctrl+Enter to save, Esc to cancel"
-                                        </span>
-                                    </div>
-                                </div>
+                                    }
+                                />
                             </Show>
 
-                            // ── Insert bar below each block ───────────────────
-                            // r[impl edit.add-rule]
-                            // r[impl edit.add-section]
+                            // ── Insert bar below this block ───────────────────
                             <InsertBar
-                                on_insert_rule=Callback::new(move |_| {
-                                    insert_rule_after(Some(key.get_value()))
+                                drop_key=key.get_value()
+                                drag_key=drag_key
+                                drag_over_bar=drag_over_bar
+                                on_drop_block=Callback::new(move |(from, to)| {
+                                    handle_drop(from, to)
                                 })
-                                on_insert_heading=Callback::new(move |level| {
-                                    insert_heading_after(Some(key.get_value()), level)
+                                on_insert_rule=Callback::new(move |_| {
+                                    insert_block(
+                                        key.get_value(),
+                                        SpecBlockKind::Rule {
+                                            id: next_provisional_id(),
+                                            text: String::new(),
+                                        },
+                                    )
+                                })
+                                on_insert_heading=Callback::new(move |lvl: u8| {
+                                    insert_block(
+                                        key.get_value(),
+                                        SpecBlockKind::Heading { level: lvl, text: String::new() },
+                                    )
                                 })
                             />
                         </div>
@@ -527,74 +526,120 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
     }
 }
 
-// ── Insert bar ────────────────────────────────────────────────────────────────
+// ── InsertBar ─────────────────────────────────────────────────────────────────
 
+/// A thin strip rendered between every pair of blocks (and above the first block).
+///
+/// During drag-and-drop it becomes the drop target: the strip expands and glows
+/// blue when the dragged block is hovering over it, giving an unambiguous
+/// insertion-point indicator. The "+" menu for manual insertion is hidden during
+/// drag so it doesn't interfere.
 #[component]
-fn InsertBar(on_insert_rule: Callback<()>, on_insert_heading: Callback<u8>) -> impl IntoView {
-    let open = RwSignal::new(false);
+fn InsertBar(
+    /// Position identifier. `TOP_DROP_KEY` means "before all blocks"; a block key
+    /// means "after that block".
+    drop_key: String,
+    drag_key: RwSignal<Option<String>>,
+    drag_over_bar: RwSignal<Option<String>>,
+    on_drop_block: Callback<(String, String)>,
+    on_insert_rule: Callback<()>,
+    on_insert_heading: Callback<u8>,
+) -> impl IntoView {
+    let drop_key = StoredValue::new(drop_key);
+    let menu_open = RwSignal::new(false);
+
+    let is_drag_active = move || drag_key.get().is_some();
+    let is_hovered = move || drag_over_bar.get().as_deref() == Some(&drop_key.get_value());
+
+    // Close the insert menu when a drag starts so it doesn't persist into drag mode.
+    Effect::new(move |_| {
+        if drag_key.get().is_some() {
+            menu_open.set(false);
+        }
+    });
 
     view! {
-        <div class="insert-bar">
-            <button
-                class="insert-bar-toggle"
-                class:is-active=move || open.get()
-                title="Insert a block here"
-                on:click=move |_| open.update(|v| *v = !*v)
-            >
-                "+"
-            </button>
+        <div
+            class="insert-bar"
+            class:insert-bar--drag-active=is_drag_active
+            class:insert-bar--hovered=is_hovered
+            on:dragover=move |e| {
+                e.prevent_default();
+                drag_over_bar.set(Some(drop_key.get_value()));
+            }
+            on:dragleave=move |_| {
+                drag_over_bar.update(|k| {
+                    if k.as_deref() == Some(&drop_key.get_value()) {
+                        *k = None;
+                    }
+                });
+            }
+            on:drop=move |e| {
+                e.prevent_default();
+                if let Some(from) = drag_key.get_untracked() {
+                    on_drop_block.run((from, drop_key.get_value()));
+                }
+            }
+        >
+            // The visible line — invisible at rest, a coloured bar during drag.
+            <div class="insert-bar-line" />
 
-            <Show when=move || open.get()>
-                <div class="insert-bar-menu">
-                    // r[impl edit.add-rule]
+            // Manual insert controls — hidden while a drag is in progress.
+            <Show when=move || !is_drag_active()>
+                <div class="insert-bar-controls">
                     <button
-                        class="insert-bar-option"
-                        on:click=move |_| {
-                            open.set(false);
-                            on_insert_rule.run(());
-                        }
+                        class="insert-bar-toggle"
+                        class:is-active=move || menu_open.get()
+                        title="Insert a block here"
+                        on:click=move |_| menu_open.update(|v| *v = !*v)
                     >
-                        "Rule"
+                        "+"
                     </button>
-                    // r[impl edit.add-section]
-                    <button
-                        class="insert-bar-option"
-                        on:click=move |_| {
-                            open.set(false);
-                            on_insert_heading.run(2);
-                        }
-                    >
-                        "Section (H2)"
-                    </button>
-                    <button
-                        class="insert-bar-option"
-                        on:click=move |_| {
-                            open.set(false);
-                            on_insert_heading.run(3);
-                        }
-                    >
-                        "Subsection (H3)"
-                    </button>
-                    <button
-                        class="insert-bar-option"
-                        on:click=move |_| {
-                            open.set(false);
-                            on_insert_heading.run(4);
-                        }
-                    >
-                        "Sub-subsection (H4)"
-                    </button>
+
+                    <Show when=move || menu_open.get()>
+                        <div class="insert-bar-menu">
+                            // r[impl edit.add-rule]
+                            <button
+                                class="insert-bar-option"
+                                on:click=move |_| {
+                                    menu_open.set(false);
+                                    on_insert_rule.run(());
+                                }
+                            >
+                                "Rule"
+                            </button>
+                            // r[impl edit.add-section]
+                            <button
+                                class="insert-bar-option"
+                                on:click=move |_| {
+                                    menu_open.set(false);
+                                    on_insert_heading.run(2);
+                                }
+                            >
+                                "Section (H2)"
+                            </button>
+                            <button
+                                class="insert-bar-option"
+                                on:click=move |_| {
+                                    menu_open.set(false);
+                                    on_insert_heading.run(3);
+                                }
+                            >
+                                "Subsection (H3)"
+                            </button>
+                            <button
+                                class="insert-bar-option"
+                                on:click=move |_| {
+                                    menu_open.set(false);
+                                    on_insert_heading.run(4);
+                                }
+                            >
+                                "Sub-subsection (H4)"
+                            </button>
+                        </div>
+                    </Show>
                 </div>
             </Show>
         </div>
     }
-}
-
-// ── Utility ───────────────────────────────────────────────────────────────────
-
-fn insertion_pos(list: &[SpecBlock], after_key: Option<&str>) -> usize {
-    after_key
-        .and_then(|k| list.iter().position(|b| b.key == k))
-        .map(|i| i + 1)
-        .unwrap_or(list.len())
 }

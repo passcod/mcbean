@@ -388,7 +388,7 @@ pub fn ProposalPage() -> impl IntoView {
                                     save_blocks_action
                                         .value()
                                         .get()
-                                        .and_then(|r| r.err())
+                                        .and_then(|r: Result<(), _>| r.err())
                                         .map(|e| {
                                             view! {
                                                 <div class="notification is-danger is-light mb-4">
@@ -407,7 +407,7 @@ pub fn ProposalPage() -> impl IntoView {
                                     {move || {
                                         blocks_resource
                                             .get()
-                                            .map(|result| match result {
+                                            .map(|result: Result<Vec<SpecBlock>, _>| match result {
                                                 Ok(blocks) if is_drafting => {
                                                     // r[impl edit.rule-text]
                                                     // r[impl edit.add-rule]
