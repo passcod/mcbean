@@ -185,10 +185,9 @@ pub fn SpecSidebar(outline: Vec<SpecOutline>, search_entries: Vec<SearchEntry>) 
                                                 {spec_name}
                                             </div>
                                             {entries.into_iter().map(|e| {
-                                                let snippet = if e.text.len() > 120 {
-                                                    format!("{}…", &e.text[..120])
-                                                } else {
-                                                    e.text.clone()
+                                                let snippet = match e.text.char_indices().nth(120) {
+                                                    Some((idx, _)) => format!("{}…", &e.text[..idx]),
+                                                    None => e.text.clone(),
                                                 };
                                                 let href = format!("#{}", e.anchor);
                                                 view! {
