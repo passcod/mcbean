@@ -122,8 +122,26 @@ pub fn SpecPage() -> impl IntoView {
                 spec.get().map(|result| match result {
                     Ok(detail) => {
                         let name = detail.name.clone();
+                        let propose_href = format!(
+                            "/repo/{}/proposal/new?spec_id={}",
+                            repo_id(),
+                            spec_id()
+                        );
                         view! {
-                            <h1 class="title">{name}</h1>
+                            <div class="level">
+                                <div class="level-left">
+                                    <div class="level-item">
+                                        <h1 class="title">{name}</h1>
+                                    </div>
+                                </div>
+                                <div class="level-right">
+                                    <div class="level-item">
+                                        <a class="button is-primary" href=propose_href>
+                                            "Propose a Change"
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
 
                             {detail.files.into_iter().map(|file| {
                                 let path = file.path.clone();

@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 use serde::{Deserialize, Serialize};
 
 use crate::components::Editor;
@@ -186,8 +186,14 @@ pub fn NewProposalPage() -> impl IntoView {
 
     let specs = Resource::new(repo_id, list_specs_for_repo);
 
+    let query = use_query_map();
+    let initial_spec_id = query
+        .read_untracked()
+        .get("spec_id")
+        .and_then(|v| v.parse::<i32>().ok());
+
     let title = RwSignal::new(String::new());
-    let selected_spec = RwSignal::new(Option::<i32>::None);
+    let selected_spec = RwSignal::new(initial_spec_id);
     let navigate = use_navigate();
     let create_action = Action::new(move |_: &()| {
         let t = title.get();
@@ -251,10 +257,18 @@ pub fn NewProposalPage() -> impl IntoView {
                                         match result {
                                             Ok(spec_list) => {
                                                 view! {
-                                                    <select on:change=move |ev| {
-                                                        let val = event_target_value(&ev);
-                                                        selected_spec.set(val.parse::<i32>().ok());
-                                                    }>
+                                                    <select
+                                                        prop:value=move || {
+                                                            selected_spec
+                                                                .get()
+                                                                .map(|id| id.to_string())
+                                                                .unwrap_or_default()
+                                                        }
+                                                        on:change=move |ev| {
+                                                            let val = event_target_value(&ev);
+                                                            selected_spec.set(val.parse::<i32>().ok());
+                                                        }
+                                                    >
                                                         <option value="">"Select a spec..."</option>
                                                         {spec_list
                                                             .into_iter()
