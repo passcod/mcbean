@@ -9,7 +9,7 @@ use leptos_meta::*;
 use crate::app::App;
 use crate::db::{DbPool, create_pool};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AppState {
     pub leptos_options: LeptosOptions,
     pub pool: DbPool,

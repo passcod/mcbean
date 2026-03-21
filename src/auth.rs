@@ -43,5 +43,5 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for TailscaleUser {
 pub async fn get_current_user() -> Result<TailscaleUser, leptos::prelude::ServerFnError> {
     leptos_axum::extract::<TailscaleUser>()
         .await
-        .map_err(|e| leptos::prelude::ServerFnError::new(e.1))
+        .map_err(|e| leptos::prelude::ServerFnError::new(e.to_string()))
 }

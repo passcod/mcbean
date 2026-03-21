@@ -79,10 +79,7 @@ pub async fn create_proposal(
         .await
         .map_err(|e| ServerFnError::new(format!("{e}")))?;
 
-    let branch_name = format!(
-        "mcbean/proposal-{}",
-        hex::encode(&rand::random::<[u8; 4]>())
-    );
+    let branch_name = format!("mcbean/proposal-{}", hex::encode(rand::random::<[u8; 4]>()));
     let title_val = if title.is_empty() {
         None
     } else {

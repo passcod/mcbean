@@ -7,26 +7,22 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-chrono = { version = "0.4.41", features = ["serde"] }
-hex = "0.4.3"
-leptos = "0.7.8"
-leptos_meta = "0.7.8"
-leptos_router = "0.7.8"
-rand = "0.8.5"
-serde = { version = "1.0.219", features = ["derive"] }
-
-# SSR-only dependencies
-axum = { version = "0.8.4", optional = true }
-deadpool-diesel = { version = "0.6.1", features = ["postgres"], optional = true }
-diesel = { version = "2.2.11", features = ["postgres", "chrono"], optional = true }
-leptos_axum = { version = "0.7.8", optional = true }
-tokio = { version = "1.44.2", features = ["full"], optional = true }
-tower = { version = "0.5.2", optional = true }
-tower-http = { version = "0.6.6", features = ["fs"], optional = true }
-
-# Hydrate-only dependencies
+axum = { version = "0.8.8", optional = true }
+chrono = { version = "0.4.44", features = ["serde"] }
 console_error_panic_hook = { version = "0.1.7", optional = true }
-wasm-bindgen = { version = "0.2.100", optional = true }
+deadpool-diesel = { version = "0.6.1", features = ["postgres"], optional = true }
+diesel = { version = "2.3.7", features = ["postgres", "chrono"], optional = true }
+hex = { version = "0.4.3", optional = true }
+leptos = "0.8.17"
+leptos_axum = { version = "0.8.8", optional = true }
+leptos_meta = "0.8.6"
+leptos_router = "0.8.12"
+rand = { version = "0.10.0", optional = true }
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.50.0", features = ["full"], optional = true }
+tower = { version = "0.5.3", optional = true }
+tower-http = { version = "0.6.8", features = ["fs"], optional = true }
+wasm-bindgen = { version = "0.2.114", optional = true }
 
 [features]
 hydrate = [
@@ -37,6 +33,7 @@ hydrate = [
 ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",
+    "leptos_router/ssr",
     "dep:axum",
     "dep:leptos_axum",
     "dep:tokio",
@@ -44,6 +41,8 @@ ssr = [
     "dep:tower-http",
     "dep:diesel",
     "dep:deadpool-diesel",
+    "dep:rand",
+    "dep:hex",
 ]
 
 [package.metadata.leptos]
