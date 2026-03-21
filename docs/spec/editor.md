@@ -141,7 +141,7 @@ The LLM edit-assist MUST NOT be able to trigger proposal submission or perform a
 r[edit.undo]
 McBean MUST provide unlimited undo for all changes made within a proposal, whether made by the user or by the LLM edit-assist.
 Undo MUST be available at all times while the proposal is in the Drafting state.
-Each LLM-assisted edit MUST be recorded as a discrete undoable step, not as a series of individual character changes.
+Each user-committed save and each LLM-assisted edit MUST each be recorded as a single discrete undoable step.
 
 r[edit.history]
 McBean MUST retain the full change history of a proposal indefinitely, including after the proposal is merged.

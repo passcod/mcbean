@@ -1030,6 +1030,10 @@ pub fn SpecBlockEditor(
     /// Owned by the parent so it can be forwarded to the changelog sidebar.
     /// Set to Some(message) on sync failure, cleared on success.
     sync_error: RwSignal<Option<String>>,
+    /// r[impl edit.undo]
+    /// Set to Some(update_id) to revert the doc to the state at that revision.
+    /// SpecBlockEditor clears it after applying the revert.
+    revert_to: RwSignal<Option<i32>>,
 ) -> impl IntoView {
     // Key of the block whose textarea is currently open.
     let editing_key: RwSignal<Option<String>> = RwSignal::new(None);
@@ -1054,6 +1058,11 @@ pub fn SpecBlockEditor(
     // freshly constructed (empty) doc that is never read.
     let loro_doc = StoredValue::new(loro::LoroDoc::new());
 
+    // r[impl edit.undo]
+    let undo_mgr: StoredValue<Option<loro::UndoManager>> = StoredValue::new(None);
+    let can_undo = RwSignal::new(false);
+    let can_redo = RwSignal::new(false);
+
     // Suppress unused-variable warnings on SSR where the hydrate-only signals
     // are never referenced.
     #[cfg(not(feature = "hydrate"))]
@@ -1066,9 +1075,26 @@ pub fn SpecBlockEditor(
         debounce_gen,
         dirty,
         loro_doc,
+        can_undo,
+        can_redo,
+        undo_mgr,
+        revert_to,
     );
     // sync_error is a prop; keep it in the suppression list so the SSR build
     // does not warn about it being unused (all reads are hydrate-only).
+
+    // r[impl edit.undo]
+    // Update the undo/redo button enabled state from the UndoManager.
+    // Safe to call before the manager is created (no-op when None).
+    #[cfg(feature = "hydrate")]
+    let update_undo_state = move || {
+        undo_mgr.with_value(|um| {
+            if let Some(um) = um {
+                can_undo.set(um.can_undo());
+                can_redo.set(um.can_redo());
+            }
+        });
+    };
 
     // ── Initial load ──────────────────────────────────────────────────────────
 
@@ -1083,7 +1109,18 @@ pub fn SpecBlockEditor(
                         let blocks = crate::components::loro_doc::loro_doc_to_blocks(doc);
                         blocks_out.set(blocks);
                         synced_vv.set(crate::components::loro_doc::encode_vv(doc));
+                        // r[impl edit.undo]
+                        // Create the UndoManager after import so the initial
+                        // snapshot is not part of the undoable history.
+                        undo_mgr.update_value(|slot| {
+                            let mut um = loro::UndoManager::new(doc);
+                            // 50 ms window groups the synchronous ops produced
+                            // by a single insert_block call into one step.
+                            um.set_merge_interval(50);
+                            *slot = Some(um);
+                        });
                     });
+                    update_undo_state();
                     loaded.set(true);
 
                     // Background pass: replace the inline HTML stubs with
@@ -1268,6 +1305,167 @@ pub fn SpecBlockEditor(
         });
     };
 
+    // r[impl edit.undo]
+    // Seal the ops accumulated since the last checkpoint into one discrete
+    // undoable step, then refresh the button enabled state.
+    #[cfg(feature = "hydrate")]
+    let commit_checkpoint = move || {
+        undo_mgr.update_value(|um| {
+            if let Some(um) = um {
+                um.record_new_checkpoint().ok();
+            }
+        });
+        update_undo_state();
+    };
+
+    // r[impl edit.undo]
+    // Unconditional so the view's on:click handlers compile on SSR.
+    // All hydrate-only work (rebuild, sync, state update) is inside the cfg block.
+    let do_undo = move || {
+        #[cfg(feature = "hydrate")]
+        {
+            let can = undo_mgr.with_value(|um| um.as_ref().map(|u| u.can_undo()).unwrap_or(false));
+            if !can {
+                return;
+            }
+            undo_mgr.update_value(|um| {
+                if let Some(um) = um {
+                    um.undo().ok();
+                }
+            });
+            rebuild_blocks(None);
+            trigger_debounced_sync();
+            update_undo_state();
+        }
+    };
+
+    // r[impl edit.undo]
+    let do_redo = move || {
+        #[cfg(feature = "hydrate")]
+        {
+            let can = undo_mgr.with_value(|um| um.as_ref().map(|u| u.can_redo()).unwrap_or(false));
+            if !can {
+                return;
+            }
+            undo_mgr.update_value(|um| {
+                if let Some(um) = um {
+                    um.redo().ok();
+                }
+            });
+            rebuild_blocks(None);
+            trigger_debounced_sync();
+            update_undo_state();
+        }
+    };
+
+    // r[impl edit.undo]
+    // Ctrl/Cmd+Z → undo, Ctrl/Cmd+Shift+Z or Ctrl+Y → redo.
+    // Only active when no textarea is open (let the browser handle undo within
+    // an active text field naturally).
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::JsCast as _;
+        let handle = window_event_listener_untyped("keydown", move |ev| {
+            let ev: web_sys::KeyboardEvent = ev.unchecked_into();
+            if !ev.ctrl_key() && !ev.meta_key() {
+                return;
+            }
+            if editing_key.get_untracked().is_some() {
+                return;
+            }
+            let key = ev.key();
+            if key == "z" {
+                ev.prevent_default();
+                do_undo();
+            } else if key == "Z" || key == "y" {
+                ev.prevent_default();
+                do_redo();
+            }
+        });
+        on_cleanup(move || drop(handle));
+    }
+
+    // r[impl edit.undo]
+    // Watch for revert requests from the changelog history panel.  When
+    // revert_to becomes Some(update_id), fetch the doc state at that revision,
+    // replace the tree contents with it as local ops (so the UndoManager can
+    // undo the revert), then clear the signal.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        let Some(update_id) = revert_to.get() else {
+            return;
+        };
+        leptos::task::spawn_local(async move {
+            match crate::pages::proposal::get_blocks_at_revision(proposal_id, update_id).await {
+                Ok(target_blocks) => {
+                    loro_doc.with_value(|doc| {
+                        use crate::components::loro_doc::{
+                            TREE_NAME, key_to_tree_id, set_text_content,
+                        };
+                        use loro::TreeParentId;
+
+                        let tree = doc.get_tree(TREE_NAME);
+
+                        // Find the parent of existing content nodes so new
+                        // nodes land in the same spec/file hierarchy slot.
+                        let target_parent = blocks_out.with_untracked(|bs| {
+                            bs.first()
+                                .and_then(|b| key_to_tree_id(&b.key))
+                                .and_then(|id| tree.parent(id))
+                                .filter(|p| {
+                                    !matches!(p, TreeParentId::Deleted | TreeParentId::Unexist)
+                                })
+                                .unwrap_or(TreeParentId::Root)
+                        });
+
+                        // Delete every current content node.
+                        let keys: Vec<String> = blocks_out
+                            .with_untracked(|bs| bs.iter().map(|b| b.key.clone()).collect());
+                        for key in &keys {
+                            if let Some(node_id) = key_to_tree_id(key) {
+                                tree.delete(node_id).ok();
+                            }
+                        }
+
+                        // Recreate from the target revision's blocks.
+                        for (idx, block) in target_blocks.iter().enumerate() {
+                            let Ok(node_id) = tree.create_at(target_parent, idx) else {
+                                continue;
+                            };
+                            let Ok(meta) = tree.get_meta(node_id) else {
+                                continue;
+                            };
+                            match &block.kind {
+                                SpecBlockKind::Heading { level, text, .. } => {
+                                    meta.insert("kind", "heading").ok();
+                                    meta.insert("level", *level as i64).ok();
+                                    set_text_content(&meta, text);
+                                }
+                                SpecBlockKind::Rule { id, text } => {
+                                    meta.insert("kind", "rule").ok();
+                                    meta.insert("rule_id", id.as_str()).ok();
+                                    set_text_content(&meta, text);
+                                }
+                                SpecBlockKind::Paragraph { text } => {
+                                    meta.insert("kind", "para").ok();
+                                    set_text_content(&meta, text);
+                                }
+                            }
+                        }
+                    });
+                    rebuild_blocks(None);
+                    commit_checkpoint();
+                    trigger_debounced_sync();
+                    revert_to.set(None);
+                }
+                Err(e) => {
+                    sync_error.set(Some(format!("Revert failed: {e}")));
+                    revert_to.set(None);
+                }
+            }
+        });
+    });
+
     let open_edit = move |key: String, text: String| {
         edit_draft.set(text);
         editing_key.set(Some(key));
@@ -1365,7 +1563,7 @@ pub fn SpecBlockEditor(
             // for every block except this one (whose HTML the marq task above
             // will fill in momentarily).
             rebuild_blocks(Some(key.clone()));
-
+            commit_checkpoint();
             trigger_debounced_sync();
         }
     };
@@ -1392,6 +1590,7 @@ pub fn SpecBlockEditor(
                 tree.delete(node_id).ok();
             });
             rebuild_blocks(None);
+            commit_checkpoint();
             trigger_debounced_sync();
         }
     };
@@ -1448,6 +1647,7 @@ pub fn SpecBlockEditor(
             });
 
             rebuild_blocks(None);
+            commit_checkpoint();
             trigger_debounced_sync();
         }
 
@@ -1537,6 +1737,7 @@ pub fn SpecBlockEditor(
             });
 
             rebuild_blocks(None);
+            commit_checkpoint();
             trigger_debounced_sync();
 
             if let Some(k) = new_key {
@@ -1554,6 +1755,26 @@ pub fn SpecBlockEditor(
 
     view! {
         <div class="spec-block-editor">
+
+            // r[impl edit.undo]
+            <div class="undo-toolbar">
+                <button
+                    class="button is-small"
+                    title="Undo (Ctrl+Z)"
+                    disabled=move || !can_undo.get()
+                    on:click=move |_| do_undo()
+                >
+                    "↩ Undo"
+                </button>
+                <button
+                    class="button is-small ml-1"
+                    title="Redo (Ctrl+Shift+Z)"
+                    disabled=move || !can_redo.get()
+                    on:click=move |_| do_redo()
+                >
+                    "↪ Redo"
+                </button>
+            </div>
 
             // Insert bar above all blocks.
             <InsertBar

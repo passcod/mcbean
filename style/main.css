@@ -50,6 +50,12 @@ html {
 
 /* ── SpecBlockEditor ──────────────────────────────────────────────────────── */
 
+/* r[impl edit.undo] */
+.undo-toolbar {
+    display: flex;
+    padding: 0.25rem 0 0.5rem;
+}
+
 .spec-block-editor {
     display: flex;
     flex-direction: column;
@@ -499,4 +505,94 @@ html {
     color: #14532d;
     border-radius: 2px;
     padding: 0 1px;
+}
+
+/* ── Changelog tab buttons ────────────────────────────────────────────────── */
+
+.changelog-tab-btn {
+    border: none;
+    background: none;
+    cursor: pointer;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    color: #9ca3af;
+    flex-shrink: 0;
+    transition:
+        color 0.1s,
+        background 0.1s;
+}
+
+.changelog-tab-btn:hover {
+    color: #374151;
+    background: #f3f4f6;
+}
+
+.changelog-tab-btn--active {
+    color: #111827;
+    background: #e5e7eb;
+}
+
+/* ── Revision history entries ─────────────────────────────────────────────── */
+
+.revision-entry {
+    padding: 0.45rem 0.75rem;
+    border-bottom: 1px solid #f3f4f6;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.revision-entry:last-child {
+    border-bottom: none;
+}
+
+.revision-entry-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.revision-entry-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #374151;
+}
+
+.revision-entry-user {
+    font-size: 0.68rem;
+    color: #6b7280;
+}
+
+.revision-entry-time {
+    font-size: 0.65rem;
+    color: #9ca3af;
+    font-family: monospace;
+}
+
+.revision-revert-btn {
+    align-self: flex-start;
+    font-size: 0.68rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    background: #fff;
+    color: #374151;
+    cursor: pointer;
+    transition:
+        background 0.1s,
+        border-color 0.1s,
+        color 0.1s;
+}
+
+.revision-revert-btn:hover:not(:disabled) {
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #1d4ed8;
+}
+
+.revision-revert-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
