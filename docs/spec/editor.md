@@ -3,6 +3,16 @@
 McBean is a web-hosted service for viewing, editing, and proposing changes to [Tracey](https://tracey.bearcove.eu)-formatted specification files hosted in GitHub repositories.
 It targets non-technical stakeholders who need to read and contribute to specs without interacting with Git, Markdown, or rule syntax directly.
 
+## Users
+
+r[users.identity]
+McBean MUST be able to differentiate between distinct human users.
+How authentication is performed is not specified.
+
+r[users.collaboration]
+All users MUST be able to view and contribute edits to any proposal that is in the Drafting state.
+Proposals are not owned exclusively by their creator.
+
 ## Repository Connection
 
 r[repo.connect]
@@ -135,6 +145,8 @@ Each LLM-assisted edit MUST be recorded as a discrete undoable step, not as a se
 r[edit.history]
 McBean MUST retain the full change history of a proposal indefinitely, including after the proposal is merged.
 The history MUST remain browsable at any point in the future.
+Each history entry MUST record which user made the change.
+For changes made by the LLM edit-assist, the entry MUST record the user on whose behalf the LLM acted.
 
 ## Proposals
 
@@ -167,7 +179,7 @@ r[proposal.multiple.overview]
 A user MAY have multiple open proposals simultaneously against the same repository.
 
 r[proposal.multiple.warning]
-When a user attempts to create a new proposal while one proposal is already open, McBean MUST display a warning indicating that an open proposal exists, before proceeding.
+When a user attempts to create a new proposal while they are already contributing to one or more open proposals, McBean MUST display a warning indicating this before proceeding.
 
 r[proposal.diff.semantic]
 McBean MUST present proposal changes as a semantic changelog derived from the parsed rule tree, not as a raw text diff.
