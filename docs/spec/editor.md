@@ -59,7 +59,7 @@ McBean MUST allow the query interface to optionally include the content of open 
 
 r[ids.provisional]
 When a new rule is added during editing, it MUST immediately be assigned a provisional ID.
-A provisional ID consists of a randomly generated hex string placed under the relevant heading hierarchy, with a `+0` version suffix (e.g. `r[security.3f8a2c1b+0]`).
+A provisional ID consists of a randomly generated hex string placed under the relevant heading hierarchy, with a `+1` version suffix (e.g. `r[security.3f8a2c1b+1]`).
 Provisional IDs are placeholders only and are not considered stable.
 
 r[ids.user-supplied]

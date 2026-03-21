@@ -596,7 +596,7 @@ pub fn next_provisional_id() -> String {
     let n = (js_sys::Math::random() * (u32::MAX as f64 + 1.0)) as u32;
     #[cfg(not(feature = "hydrate"))]
     let n = rand::random::<u32>();
-    format!("new.{n:08x}+0")
+    format!("new.{n:08x}+1")
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
