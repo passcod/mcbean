@@ -1,0 +1,59 @@
+[package]
+name = "mcbean"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chrono = { version = "0.4.41", features = ["serde"] }
+hex = "0.4.3"
+leptos = "0.7.8"
+leptos_meta = "0.7.8"
+leptos_router = "0.7.8"
+rand = "0.8.5"
+serde = { version = "1.0.219", features = ["derive"] }
+
+# SSR-only dependencies
+axum = { version = "0.8.4", optional = true }
+deadpool-diesel = { version = "0.6.1", features = ["postgres"], optional = true }
+diesel = { version = "2.2.11", features = ["postgres", "chrono"], optional = true }
+leptos_axum = { version = "0.7.8", optional = true }
+tokio = { version = "1.44.2", features = ["full"], optional = true }
+tower = { version = "0.5.2", optional = true }
+tower-http = { version = "0.6.6", features = ["fs"], optional = true }
+
+# Hydrate-only dependencies
+console_error_panic_hook = { version = "0.1.7", optional = true }
+wasm-bindgen = { version = "0.2.100", optional = true }
+
+[features]
+hydrate = [
+    "leptos/hydrate",
+    "dep:wasm-bindgen",
+    "dep:console_error_panic_hook",
+]
+ssr = [
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "dep:axum",
+    "dep:leptos_axum",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:diesel",
+    "dep:deadpool-diesel",
+]
+
+[package.metadata.leptos]
+output-name = "mcbean"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.css"
+assets-dir = "public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+env = "DEV"
+bin-features = ["ssr"]
+lib-features = ["hydrate"]

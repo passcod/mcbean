@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS proposal_changes;
+DROP TABLE IF EXISTS proposals;
+DROP TABLE IF EXISTS spec_files;
+DROP TABLE IF EXISTS specs;
+DROP TABLE IF EXISTS repositories;
+DROP TABLE IF EXISTS users;
