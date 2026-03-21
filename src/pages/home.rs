@@ -128,10 +128,12 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
                 content_len = fetched.content.len(),
                 "fetched tracey config"
             );
-            crate::tracey_config::parse_tracey_config(&fetched.content).map_err(|e| {
-                tracing::error!(error = %e, "failed to parse tracey config");
-                ServerFnError::new(format!("Failed to parse tracey config: {e}"))
-            })?
+            crate::tracey_config::parse(&fetched.content)
+                .map_err(|e| {
+                    tracing::error!(error = %e, "failed to parse tracey config");
+                    ServerFnError::new(format!("Failed to parse tracey config: {e}"))
+                })?
+                .specs
         }
         Err(crate::github::GitHubError::NotFound(_)) => {
             tracing::warn!(path = config_path, "tracey config not found in repository");
