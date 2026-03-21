@@ -2,6 +2,8 @@ use loro::{
     Container, LoroDoc, LoroMap, LoroText, LoroTree, LoroValue, PeerID, TreeID, TreeParentId,
     ValueOrContainer, VersionVector,
 };
+#[cfg(feature = "ssr")]
+use tracing::{debug, info};
 
 use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind, slugify};
 
@@ -137,11 +139,19 @@ fn collect_blocks_under(tree: &LoroTree, parent: TreeParentId, out: &mut Vec<Spe
 pub async fn build_doc_from_specs(specs: &[(String, Vec<(String, String)>)]) -> LoroDoc {
     use crate::components::spec_block_editor::parse_blocks_from_content;
 
+    info!(
+        spec_count = specs.len(),
+        specs = ?specs.iter().map(|(n, files)| format!("{n} ({} files)", files.len())).collect::<Vec<_>>(),
+        "build_doc_from_specs: entry"
+    );
+
     let doc = LoroDoc::new();
     doc.set_peer_id(SERVER_PEER_ID).expect("set server peer id");
     let tree = doc.get_tree(TREE_NAME);
 
     for (spec_name, files) in specs {
+        info!(spec = %spec_name, file_count = files.len(), "build_doc_from_specs: processing spec");
+
         let spec_node = tree.create(TreeParentId::Root).expect("create spec node");
         let spec_meta = tree.get_meta(spec_node).expect("spec meta");
         spec_meta.insert("kind", KIND_SPEC).unwrap();
@@ -151,6 +161,13 @@ pub async fn build_doc_from_specs(specs: &[(String, Vec<(String, String)>)]) -> 
         sorted_files.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (file_path, file_content) in sorted_files {
+            info!(
+                spec = %spec_name,
+                path = %file_path,
+                content_bytes = file_content.len(),
+                "build_doc_from_specs: about to call parse_blocks_from_content"
+            );
+
             let file_node = tree
                 .create(TreeParentId::Node(spec_node))
                 .expect("create file node");
@@ -159,10 +176,27 @@ pub async fn build_doc_from_specs(specs: &[(String, Vec<(String, String)>)]) -> 
             file_meta.insert("path", file_path.as_str()).unwrap();
 
             let blocks = parse_blocks_from_content(file_content).await;
+
+            info!(
+                spec = %spec_name,
+                path = %file_path,
+                block_count = blocks.len(),
+                "build_doc_from_specs: parse_blocks_from_content returned, about to insert_flat_blocks"
+            );
+
             insert_flat_blocks(&tree, file_node, &blocks);
+
+            info!(
+                spec = %spec_name,
+                path = %file_path,
+                "build_doc_from_specs: insert_flat_blocks complete"
+            );
         }
+
+        info!(spec = %spec_name, "build_doc_from_specs: spec complete");
     }
 
+    info!("build_doc_from_specs: all specs processed, returning doc");
     doc
 }
 
@@ -174,11 +208,13 @@ pub async fn build_doc_from_specs(specs: &[(String, Vec<(String, String)>)]) -> 
 /// as an implicit level-0 root for the stack.
 #[cfg(feature = "ssr")]
 fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) {
+    debug!(block_count = blocks.len(), "insert_flat_blocks: entry");
     let mut stack: Vec<(u8, TreeID)> = vec![(0, file_node)];
 
-    for block in blocks {
+    for (i, block) in blocks.iter().enumerate() {
         match &block.kind {
             SpecBlockKind::Heading { level, text, .. } => {
+                debug!(index = i, %level, text = %text, "insert_flat_blocks: heading");
                 while stack.len() > 1 && stack.last().map(|(l, _)| *l).unwrap_or(0) >= *level {
                     stack.pop();
                 }
@@ -189,10 +225,22 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
                 let meta = tree.get_meta(node).expect("heading meta");
                 meta.insert("kind", KIND_HEADING).unwrap();
                 meta.insert("level", *level as i64).unwrap();
+                debug!(
+                    index = i,
+                    "insert_flat_blocks: calling set_text_content for heading"
+                );
                 set_text_content(&meta, text);
+                debug!(index = i, "insert_flat_blocks: heading done");
                 stack.push((*level, node));
             }
             SpecBlockKind::Rule { id, text } => {
+                debug!(
+                    index = i,
+                    rule_id = %id,
+                    text_bytes = text.len(),
+                    text_preview = %&text[..text.len().min(120)],
+                    "insert_flat_blocks: rule"
+                );
                 let parent = stack.last().map(|(_, id)| *id).unwrap_or(file_node);
                 let node = tree
                     .create(TreeParentId::Node(parent))
@@ -200,19 +248,34 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
                 let meta = tree.get_meta(node).expect("rule meta");
                 meta.insert("kind", KIND_RULE).unwrap();
                 meta.insert("rule_id", id.as_str()).unwrap();
+                debug!(index = i, rule_id = %id, "insert_flat_blocks: calling set_text_content for rule");
                 set_text_content(&meta, text);
+                debug!(index = i, rule_id = %id, "insert_flat_blocks: rule done");
             }
             SpecBlockKind::Paragraph { text } => {
+                debug!(
+                    index = i,
+                    text_bytes = text.len(),
+                    text_preview = %&text[..text.len().min(80)],
+                    "insert_flat_blocks: paragraph"
+                );
                 let parent = stack.last().map(|(_, id)| *id).unwrap_or(file_node);
                 let node = tree
                     .create(TreeParentId::Node(parent))
                     .expect("create para node");
                 let meta = tree.get_meta(node).expect("para meta");
                 meta.insert("kind", KIND_PARA).unwrap();
+                debug!(
+                    index = i,
+                    "insert_flat_blocks: calling set_text_content for para"
+                );
                 set_text_content(&meta, text);
+                debug!(index = i, "insert_flat_blocks: para done");
             }
         }
     }
+
+    debug!("insert_flat_blocks: complete");
 }
 
 // ── Reconstruct: base snapshot + stored updates → LoroDoc ────────────────────
@@ -340,9 +403,16 @@ pub fn decode_vv_or_empty(bytes: &[u8]) -> VersionVector {
 /// way to write text content — storing plain strings in the map would lose
 /// fine-grained CRDT merge capability for concurrent edits.
 pub fn set_text_content(meta: &LoroMap, content: &str) {
+    #[cfg(feature = "ssr")]
+    debug!(content_bytes = content.len(), "set_text_content: entry");
     match meta.get("text") {
         Some(ValueOrContainer::Container(Container::Text(t))) => {
             let len = t.len_unicode();
+            #[cfg(feature = "ssr")]
+            debug!(
+                existing_len = len,
+                "set_text_content: found existing LoroText, replacing"
+            );
             if len > 0 {
                 t.delete(0, len).ok();
             }
@@ -351,14 +421,23 @@ pub fn set_text_content(meta: &LoroMap, content: &str) {
             }
         }
         _ => {
+            #[cfg(feature = "ssr")]
+            debug!("set_text_content: creating new LoroText container");
             let t = meta
                 .insert_container("text", LoroText::new())
                 .expect("insert text container");
             if !content.is_empty() {
+                #[cfg(feature = "ssr")]
+                debug!(
+                    content_bytes = content.len(),
+                    "set_text_content: inserting into new container"
+                );
                 t.insert(0, content).ok();
             }
         }
     }
+    #[cfg(feature = "ssr")]
+    debug!("set_text_content: done");
 }
 
 // ── Low-level meta accessors ──────────────────────────────────────────────────

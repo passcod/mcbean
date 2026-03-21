@@ -268,11 +268,34 @@ pub async fn sync_proposal(
 pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
     use marq::{DocElement, RenderOptions, render};
 
+    #[cfg(feature = "ssr")]
+    tracing::info!(
+        content_bytes = content.len(),
+        content_lines = content.lines().count(),
+        content_preview = %&content[..content.len().min(200)],
+        "parse_blocks_from_content: entry"
+    );
+
+    #[cfg(feature = "ssr")]
+    tracing::info!("parse_blocks_from_content: calling marq::render");
+    #[cfg(feature = "ssr")]
+    let t0 = std::time::Instant::now();
+
     let doc = match render(content, &RenderOptions::new()).await {
-        Ok(d) => d,
+        Ok(d) => {
+            #[cfg(feature = "ssr")]
+            tracing::info!(
+                elapsed_ms = t0.elapsed().as_millis(),
+                element_count = d.elements.len(),
+                req_count = d.reqs.len(),
+                heading_count = d.headings.len(),
+                "parse_blocks_from_content: marq::render returned"
+            );
+            d
+        }
         Err(_e) => {
             #[cfg(feature = "ssr")]
-            tracing::warn!(error = %_e, "marq render failed in parse_blocks_from_content");
+            tracing::warn!(error = %_e, elapsed_ms = t0.elapsed().as_millis(), "marq render failed in parse_blocks_from_content");
             return Vec::new();
         }
     };
@@ -286,6 +309,13 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
 
         match element {
             DocElement::Heading(h) => {
+                #[cfg(feature = "ssr")]
+                tracing::debug!(
+                    seq,
+                    level = h.level,
+                    title = %h.title,
+                    "parse_blocks_from_content: heading element"
+                );
                 blocks.push(SpecBlock {
                     key,
                     kind: SpecBlockKind::Heading {
@@ -302,7 +332,35 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                 });
             }
             DocElement::Req(r) => {
-                let prose = join_hard_wraps(strip_blockquote_prefixes(&r.raw).trim());
+                #[cfg(feature = "ssr")]
+                tracing::info!(
+                    seq,
+                    rule_id = %r.id,
+                    raw_bytes = r.raw.len(),
+                    raw_lines = r.raw.lines().count(),
+                    raw_preview = %&r.raw[..r.raw.len().min(300)],
+                    "parse_blocks_from_content: req element — about to strip_blockquote_prefixes"
+                );
+
+                // Strip the `> ` blockquote prefixes marq adds for blockquote-style
+                // rules, then trim.  We use the stripped source directly rather than
+                // round-tripping through parse_ast/render_to_markdown: the marq ast.rs
+                // parse_blocks_until_end loop hangs on tight lists whose items start
+                // with inline markup (e.g. `**bold:**`) because parse_blocks breaks on
+                // End(Strong) without consuming it, causing an infinite retry loop.
+                // The stripped text is already well-formed Markdown — no reformatting needed.
+                let prose = strip_blockquote_prefixes(&r.raw).trim().to_string();
+
+                #[cfg(feature = "ssr")]
+                tracing::info!(
+                    seq,
+                    rule_id = %r.id,
+                    prose_bytes = prose.len(),
+                    prose_lines = prose.lines().count(),
+                    prose_preview = %&prose[..prose.len().min(300)],
+                    "parse_blocks_from_content: stripped prose"
+                );
+
                 blocks.push(SpecBlock {
                     key,
                     kind: SpecBlockKind::Rule {
@@ -311,13 +369,27 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                     },
                     html: r.html.clone(),
                 });
+
+                #[cfg(feature = "ssr")]
+                tracing::info!(seq, rule_id = %r.id, "parse_blocks_from_content: req element done");
             }
             DocElement::Paragraph(p) => {
+                #[cfg(feature = "ssr")]
+                tracing::debug!(
+                    seq,
+                    offset = p.offset,
+                    "parse_blocks_from_content: paragraph element"
+                );
                 let start = p.offset.min(content.len());
                 let rest = &content[start..];
                 let end = rest.find("\n\n").unwrap_or(rest.len());
                 let text = join_hard_wraps(rest[..end].trim());
                 if text.is_empty() || text.starts_with("r[") {
+                    #[cfg(feature = "ssr")]
+                    tracing::debug!(
+                        seq,
+                        "parse_blocks_from_content: paragraph skipped (empty or r[)"
+                    );
                     continue;
                 }
                 blocks.push(SpecBlock {
@@ -328,6 +400,13 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
             }
         }
     }
+
+    #[cfg(feature = "ssr")]
+    tracing::info!(
+        total_blocks = blocks.len(),
+        total_elapsed_ms = t0.elapsed().as_millis(),
+        "parse_blocks_from_content: complete"
+    );
 
     blocks
 }
@@ -344,6 +423,11 @@ pub fn slugify(text: &str) -> String {
         .join("-")
 }
 
+/// Join soft-wrapped prose lines into a single logical line.
+///
+/// Used only for `Paragraph` blocks extracted by byte-offset from the raw
+/// source.  Rule bodies are handled via the marq AST round-trip instead, so
+/// this function never sees fenced code blocks or other block-level constructs.
 fn join_hard_wraps(text: &str) -> String {
     text.lines().collect::<Vec<_>>().join(" ")
 }
