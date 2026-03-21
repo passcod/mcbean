@@ -1311,10 +1311,9 @@ fn InsertBar(
                     <button
                         class="insert-bar-toggle"
                         class:is-active=move || menu_open.get()
-                        title="Insert a block here"
                         on:click=move |_| menu_open.update(|v| *v = !*v)
                     >
-                        "+"
+                        "Add item"
                     </button>
 
                     <Show when=move || menu_open.get()>
