@@ -464,24 +464,33 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                 }
                             >
                                 // r[impl edit.rule-text]
-                                // The textarea inherits the block's font styling so its height
-                                // matches the displayed content as closely as possible.
-                                // autofocus fires when the element is dynamically mounted.
-                                // Blur commits; Escape reverts without saving.
-                                <textarea
-                                    class="spec-block-textarea"
-                                    autofocus=true
+                                // grow-wrap uses the CSS grid shadow-twin trick so the textarea
+                                // auto-sizes in browsers without field-sizing:content (Firefox).
+                                // The ::after pseudo-element mirrors the content via
+                                // data-replicated-value and occupies the same grid cell, driving
+                                // the container height. field-sizing:content is kept as a
+                                // @supports enhancement for browsers that have it.
+                                // Font metrics live on the wrapper so both the textarea and the
+                                // ::after inherit identical sizing.
+                                <div
+                                    class="grow-wrap"
                                     style:font-size=ta_font_size
                                     style:font-weight=ta_font_weight
-                                    prop:value=move || edit_draft.get()
-                                    on:input=move |ev| edit_draft.set(event_target_value(&ev))
-                                    on:blur=move |_| commit_edit()
-                                    on:keydown=move |ev| {
-                                        if ev.key() == "Escape" {
-                                            revert_edit();
+                                    attr:data-replicated-value=move || edit_draft.get()
+                                >
+                                    <textarea
+                                        class="spec-block-textarea"
+                                        autofocus=true
+                                        prop:value=move || edit_draft.get()
+                                        on:input=move |ev| edit_draft.set(event_target_value(&ev))
+                                        on:blur=move |_| commit_edit()
+                                        on:keydown=move |ev| {
+                                            if ev.key() == "Escape" {
+                                                revert_edit();
+                                            }
                                         }
-                                    }
-                                />
+                                    />
+                                </div>
                             </Show>
 
                             // ── Insert bar below this block ───────────────────

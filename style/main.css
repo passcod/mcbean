@@ -167,10 +167,36 @@ html {
     font-size: 0.9rem;
 }
 
-/* Textarea — styled to blend with the surrounding content.
-   field-sizing:content makes it grow to fit without a manual rows attribute. */
+/* grow-wrap: shadow-twin auto-sizing technique that works in all browsers.
+   The ::after pseudo-element mirrors the textarea content via
+   data-replicated-value and sits in the same grid cell, invisibly driving
+   the container height. Both the textarea and ::after inherit font metrics
+   from the wrapper so they size identically. */
+.grow-wrap {
+    display: grid;
+    width: 100%;
+}
+
+.grow-wrap::after {
+    content: attr(data-replicated-value) " ";
+    grid-area: 1 / 1;
+    visibility: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* Must match textarea metrics exactly */
+    padding: 0.2rem 0 0.4rem;
+    border-bottom: 2px solid transparent;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    line-height: inherit;
+    min-height: 2em;
+    max-height: 32em;
+    overflow: hidden;
+}
+
 .spec-block-textarea {
-    display: block;
+    grid-area: 1 / 1;
     width: 100%;
     padding: 0.2rem 0 0.4rem;
     margin: 0;
@@ -180,17 +206,27 @@ html {
     outline: none;
     background: transparent;
     font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
     line-height: inherit;
     color: inherit;
     resize: none;
-    field-sizing: content;
+    overflow: hidden;
     min-height: 2em;
     max-height: 32em;
-    overflow-y: auto;
 }
 
 .spec-block-textarea:focus {
     border-bottom-color: #3b82f6;
+}
+
+/* Progressive enhancement: field-sizing:content for browsers that support it.
+   The grow-wrap grid technique remains active but becomes redundant — no harm. */
+@supports (field-sizing: content) {
+    .spec-block-textarea {
+        field-sizing: content;
+        overflow-y: auto;
+    }
 }
 
 /* Footer save button */
