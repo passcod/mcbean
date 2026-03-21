@@ -5,7 +5,8 @@ use leptos::config::get_configuration;
 use leptos::prelude::*;
 use leptos_axum::{LeptosRoutes, generate_route_list};
 use leptos_meta::*;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{self, TraceLayer};
+use tracing::Level;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::app::App;
@@ -79,7 +80,12 @@ pub async fn run() {
             },
         )
         .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO))
+                .on_failure(trace::DefaultOnFailure::new().level(Level::ERROR)),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();

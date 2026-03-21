@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"], opt
 wasm-bindgen = { version = "0.2.114", optional = true }
 
 [features]
+default = ["ssr"]
 hydrate = [
     "leptos/hydrate",
     "dep:wasm-bindgen",
@@ -57,7 +58,7 @@ site-root = "target/site"
 site-pkg-dir = "pkg"
 style-file = "style/main.css"
 assets-dir = "public"
-site-addr = "127.0.0.1:5050"
+site-addr = "[::1]:5050"
 reload-port = 5055
 bin-features = ["ssr"]
 lib-features = ["hydrate"]
