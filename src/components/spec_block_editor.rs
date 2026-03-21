@@ -592,8 +592,11 @@ pub fn next_block_key() -> String {
 /// Generate a provisional rule ID per r[ids.provisional].
 pub fn next_provisional_id() -> String {
     // r[impl ids.provisional]
-    let n = BLOCK_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("{:08x}+0", n)
+    #[cfg(feature = "hydrate")]
+    let n = (js_sys::Math::random() * (u32::MAX as f64 + 1.0)) as u32;
+    #[cfg(not(feature = "hydrate"))]
+    let n = rand::random::<u32>();
+    format!("{n:08x}+0")
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
