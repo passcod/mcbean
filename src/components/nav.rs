@@ -14,8 +14,9 @@ pub fn Nav() -> impl IntoView {
     view! {
         <nav class="navbar is-dark" role="navigation" aria-label="main navigation">
             <div class="navbar-brand">
-                <a class="navbar-item has-text-weight-bold" href="/">
-                    "McBean"
+                <a class="navbar-item" href="/">
+                    <img src="/logo.png" alt="McBean" height="28" style="height: 28px; width: 28px; margin-right: 0.5rem; border-radius: 4px;"/>
+                    <span class="has-text-weight-bold">"McBean"</span>
                 </a>
             </div>
             <div class="navbar-menu">
