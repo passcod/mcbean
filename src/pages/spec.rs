@@ -14,12 +14,14 @@ pub struct SpecDetail {
 pub struct SpecFileDetail {
     pub id: i32,
     pub path: String,
-    pub content: String,
+    /// Pre-rendered HTML from marq.
+    pub html: String,
 }
 
 #[server]
 pub async fn get_spec(spec_id: i32) -> Result<SpecDetail, ServerFnError> {
     use diesel::prelude::*;
+    use marq::{RenderOptions, render};
 
     tracing::info!(spec_id, "get_spec called");
 
@@ -46,19 +48,7 @@ pub async fn get_spec(spec_id: i32) -> Result<SpecDetail, ServerFnError> {
                 .order(spec_files::path.asc())
                 .load::<(i32, String, String)>(conn)?;
 
-            Ok::<_, diesel::result::Error>(SpecDetail {
-                id: sid,
-                name: sname,
-                repository_id: repo_id,
-                files: files
-                    .into_iter()
-                    .map(|(fid, fpath, fcontent)| SpecFileDetail {
-                        id: fid,
-                        path: fpath,
-                        content: fcontent,
-                    })
-                    .collect(),
-            })
+            Ok::<_, diesel::result::Error>((sid, sname, repo_id, files))
         })
         .await
         .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
@@ -67,12 +57,35 @@ pub async fn get_spec(spec_id: i32) -> Result<SpecDetail, ServerFnError> {
             ServerFnError::new(format!("query error: {e}"))
         })?;
 
+    let (sid, sname, repo_id, files) = result;
+
+    let mut rendered_files = Vec::with_capacity(files.len());
+    for (fid, fpath, fcontent) in files {
+        let opts = RenderOptions::new().with_source_path(&fpath);
+        // r[impl view.render]
+        let doc = render(&fcontent, &opts).await.map_err(|e| {
+            tracing::error!(spec_id, path = %fpath, error = %e, "marq render failed");
+            ServerFnError::new(format!("Failed to render {fpath}: {e}"))
+        })?;
+        rendered_files.push(SpecFileDetail {
+            id: fid,
+            path: fpath,
+            html: doc.html,
+        });
+    }
+
     tracing::info!(
         spec_id,
-        file_count = result.files.len(),
+        file_count = rendered_files.len(),
         "get_spec returned"
     );
-    Ok(result)
+
+    Ok(SpecDetail {
+        id: sid,
+        name: sname,
+        repository_id: repo_id,
+        files: rendered_files,
+    })
 }
 
 #[component]
@@ -114,45 +127,10 @@ pub fn SpecPage() -> impl IntoView {
 
                             {detail.files.into_iter().map(|file| {
                                 let path = file.path.clone();
-                                let lines: Vec<String> = file.content.lines().map(String::from).collect();
                                 view! {
                                     <div class="box">
-                                        <h2 class="subtitle is-5">
-                                            <span class="icon-text">
-                                                <span class="icon"><i class="fas fa-file-alt"></i></span>
-                                                <span>{path}</span>
-                                            </span>
-                                        </h2>
-                                        // r[impl view.render]
-                                        <div class="content">
-                                            <pre style="white-space: pre-wrap;">{
-                                                lines.into_iter().map(|line| {
-                                                    let trimmed = line.trim();
-                                                    if trimmed.starts_with("r[") && trimmed.ends_with(']') {
-                                                        let rule_id = trimmed[2..trimmed.len()-1].to_string();
-                                                        view! {
-                                                            <span
-                                                                id=rule_id.clone()
-                                                                class="has-text-grey-light is-size-7"
-                                                            >
-                                                                {line.clone()}
-                                                            </span>
-                                                            "\n"
-                                                        }.into_any()
-                                                    } else if trimmed.starts_with('#') {
-                                                        view! {
-                                                            <strong>{line.clone()}</strong>
-                                                            "\n"
-                                                        }.into_any()
-                                                    } else {
-                                                        view! {
-                                                            <span>{line}</span>
-                                                            "\n"
-                                                        }.into_any()
-                                                    }
-                                                }).collect::<Vec<_>>()
-                                            }</pre>
-                                        </div>
+                                        <p class="has-text-grey is-size-7 mb-3">{path}</p>
+                                        <div class="content spec-content" inner_html=file.html />
                                     </div>
                                 }
                             }).collect::<Vec<_>>()}
