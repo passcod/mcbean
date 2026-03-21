@@ -1,5 +1,5 @@
-use chrono::NaiveDateTime;
 use diesel::prelude::*;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use super::schema::*;
@@ -12,8 +12,10 @@ pub struct User {
     // r[impl users.identity]
     pub email: String,
     pub display_name: Option<String>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub created_at: Timestamp,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -35,8 +37,10 @@ pub struct Repository {
     pub default_branch: String,
     // r[impl notify.slack]
     pub slack_webhook_url: Option<String>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub created_at: Timestamp,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -57,8 +61,10 @@ pub struct Spec {
     // r[impl repo.multi-spec]
     pub repository_id: i32,
     pub name: String,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub created_at: Timestamp,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -78,8 +84,10 @@ pub struct SpecFile {
     pub path: String,
     pub content: String,
     pub commit_sha: String,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub created_at: Timestamp,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -106,8 +114,10 @@ pub struct Proposal {
     // r[impl lifecycle.drafting]
     pub status: String,
     pub created_by: i32,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub created_at: Timestamp,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -135,7 +145,8 @@ pub struct ProposalChange {
     pub llm_prompt: Option<String>,
     // r[impl edit.history]
     pub content_snapshot: String,
-    pub created_at: NaiveDateTime,
+    #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Insertable, Deserialize)]

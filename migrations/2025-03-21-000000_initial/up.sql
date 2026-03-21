@@ -2,8 +2,8 @@ CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     email VARCHAR NOT NULL UNIQUE, -- r[impl users.identity]
     display_name VARCHAR,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE repositories (
@@ -13,16 +13,16 @@ CREATE TABLE repositories (
     name VARCHAR NOT NULL,
     default_branch VARCHAR NOT NULL DEFAULT 'main',
     slack_webhook_url VARCHAR, -- r[impl notify.slack]
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE specs (
     id SERIAL PRIMARY KEY,
     repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE, -- r[impl repo.multi-spec]
     name VARCHAR NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(repository_id, name)
 );
 
@@ -32,8 +32,8 @@ CREATE TABLE spec_files (
     path VARCHAR NOT NULL,
     content TEXT NOT NULL,
     commit_sha VARCHAR NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(spec_id, path)
 );
 
@@ -47,8 +47,8 @@ CREATE TABLE proposals (
     status VARCHAR NOT NULL DEFAULT 'drafting' -- r[impl lifecycle.drafting]
         CHECK (status IN ('drafting', 'in_progress', 'merged', 'abandoned')),
     created_by INTEGER NOT NULL REFERENCES users(id),
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE proposal_changes (
@@ -60,5 +60,5 @@ CREATE TABLE proposal_changes (
         CHECK (change_type IN ('user_edit', 'llm_edit', 'undo')),
     llm_prompt TEXT,
     content_snapshot TEXT NOT NULL, -- r[impl edit.history]
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

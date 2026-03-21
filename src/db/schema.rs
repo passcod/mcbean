@@ -4,8 +4,8 @@ diesel::table! {
         // r[impl users.identity]
         email -> Varchar,
         display_name -> Nullable<Varchar>,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -19,8 +19,8 @@ diesel::table! {
         default_branch -> Varchar,
         // r[impl notify.slack]
         slack_webhook_url -> Nullable<Varchar>,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -30,8 +30,8 @@ diesel::table! {
         // r[impl repo.multi-spec]
         repository_id -> Int4,
         name -> Varchar,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -43,8 +43,8 @@ diesel::table! {
         path -> Varchar,
         content -> Text,
         commit_sha -> Varchar,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -61,8 +61,8 @@ diesel::table! {
         // r[impl lifecycle.drafting]
         status -> Varchar,
         created_by -> Int4,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
+        created_at -> Timestamptz,
+        updated_at -> Timestamptz,
     }
 }
 
@@ -78,7 +78,7 @@ diesel::table! {
         llm_prompt -> Nullable<Text>,
         // r[impl edit.history]
         content_snapshot -> Text,
-        created_at -> Timestamp,
+        created_at -> Timestamptz,
     }
 }
 
