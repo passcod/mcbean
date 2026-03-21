@@ -86,25 +86,13 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                         })
                 }}
                 <button
-                    class=move || {
-                        if title.get().trim().is_empty() {
-                            "button is-primary is-fullwidth"
-                        } else {
-                            "button is-success is-fullwidth"
-                        }
-                    }
+                    class="button is-primary is-fullwidth"
                     style="margin-top: 0.625rem;"
                     disabled=move || create_action.pending().get()
                     on:click=move |_| { create_action.dispatch(()); }
                 >
                     {move || {
-                        if create_action.pending().get() {
-                            "Creating…"
-                        } else if title.get().trim().is_empty() {
-                            "Create Proposal"
-                        } else {
-                            "Continue Proposal"
-                        }
+                        if create_action.pending().get() { "Creating…" } else { "Create Proposal" }
                     }}
                 </button>
             </div>
@@ -114,7 +102,16 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
         <button
             style:opacity=move || if panel_open.get() { "0" } else { "1" }
             style:pointer-events=move || if panel_open.get() { "none" } else { "auto" }
-            style:background=move || if hovered.get() { "#3254d4" } else { "#485fc7" }
+            style:background=move || {
+                let has_content = !title.get().trim().is_empty();
+                let is_hovered = hovered.get();
+                match (has_content, is_hovered) {
+                    (true,  true)  => "#1e6b47",
+                    (true,  false) => "#257953",
+                    (false, true)  => "#3254d4",
+                    (false, false) => "#485fc7",
+                }
+            }
             style="position: fixed; bottom: 1.5rem; right: 1.5rem; \
                    height: 56px; min-width: 56px; border-radius: 28px; \
                    border: none; color: #fff; cursor: pointer; \
@@ -144,7 +141,13 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                        transition: max-width 0.2s ease, opacity 0.15s ease, \
                                    padding-right 0.2s ease;"
             >
-                "Propose a Change"
+                {move || {
+                    if title.get().trim().is_empty() {
+                        "Propose a Change"
+                    } else {
+                        "Continue Proposal"
+                    }
+                }}
             </span>
         </button>
     }
