@@ -633,13 +633,31 @@ pub fn SpecBlockEditor(
 
     // ── Mutation helpers ──────────────────────────────────────────────────────
 
-    // Re-derive the flat block list from the Loro doc and push it out.
-    // Must be called after every mutation to keep the UI in sync.
+    // Re-derive the flat block list from the Loro doc and push it out,
+    // carrying forward any already-rendered HTML from the previous list so
+    // that marq-rendered HTML is never discarded by a structural mutation.
+    //
+    // `exclude_key`: if Some, that block's HTML is NOT carried forward —
+    // it is about to be replaced by a fresh marq render task.
     #[cfg(feature = "hydrate")]
-    let refresh_blocks = move || {
+    let rebuild_blocks = move |exclude_key: Option<String>| {
         loro_doc.with_value(|doc| {
-            let blocks = crate::components::loro_doc::loro_doc_to_blocks(doc);
-            blocks_out.set(blocks);
+            use std::collections::HashMap;
+            let mut new_blocks = crate::components::loro_doc::loro_doc_to_blocks(doc);
+            let prev_html: HashMap<String, String> = blocks_out.with_untracked(|list| {
+                list.iter()
+                    .filter(|b| {
+                        !b.html.is_empty() && exclude_key.as_deref() != Some(b.key.as_str())
+                    })
+                    .map(|b| (b.key.clone(), b.html.clone()))
+                    .collect()
+            });
+            for b in &mut new_blocks {
+                if let Some(html) = prev_html.get(&b.key) {
+                    b.html = html.clone();
+                }
+            }
+            blocks_out.set(new_blocks);
         });
     };
 
@@ -702,27 +720,32 @@ pub fn SpecBlockEditor(
             {
                 use marq::{RenderOptions, render};
 
+                // Use the outer `text` (from edit_draft) in all arms so that a
+                // newly-inserted block with empty Loro text still renders the
+                // content the user just typed.  Using `..` avoids the match
+                // bindings shadowing the outer variable.
                 let raw = blocks_out.with_untracked(|list| {
                     list.iter().find(|b| b.key == key).map(|b| match &b.kind {
-                        SpecBlockKind::Rule { id, text } => {
+                        SpecBlockKind::Rule { id, .. } => {
                             format!("r[{}]\n{}\n\n", id, text)
                         }
-                        SpecBlockKind::Heading { level, text, .. } => {
+                        SpecBlockKind::Heading { level, .. } => {
                             format!("{} {}\n\n", "#".repeat(*level as usize), text)
                         }
-                        SpecBlockKind::Paragraph { text } => {
+                        SpecBlockKind::Paragraph { .. } => {
                             format!("{}\n\n", text)
                         }
                     })
                 });
 
                 if let Some(raw) = raw {
+                    let key_for_task = key.clone();
                     leptos::task::spawn_local(async move {
                         if let Ok(doc) = render(&raw, &RenderOptions::new()).await {
                             let new_html =
                                 doc.reqs.first().map(|r| r.html.clone()).unwrap_or(doc.html);
                             blocks_out.update(|list| {
-                                if let Some(b) = list.iter_mut().find(|b| b.key == key) {
+                                if let Some(b) = list.iter_mut().find(|b| b.key == key_for_task) {
                                     b.html = new_html;
                                 }
                             });
@@ -731,11 +754,10 @@ pub fn SpecBlockEditor(
                 }
             }
 
-            // Push the updated text into blocks_out (HTML will be patched above).
-            loro_doc.with_value(|doc| {
-                let blocks = loro_doc_to_blocks(doc);
-                blocks_out.set(blocks);
-            });
+            // Rebuild blocks_out with updated text, preserving rendered HTML
+            // for every block except this one (whose HTML the marq task above
+            // will fill in momentarily).
+            rebuild_blocks(Some(key.clone()));
 
             trigger_debounced_sync();
         }
@@ -762,7 +784,7 @@ pub fn SpecBlockEditor(
                 let tree = doc.get_tree(TREE_NAME);
                 tree.delete(node_id).ok();
             });
-            refresh_blocks();
+            rebuild_blocks(None);
             trigger_debounced_sync();
         }
     };
@@ -818,7 +840,7 @@ pub fn SpecBlockEditor(
                 }
             });
 
-            refresh_blocks();
+            rebuild_blocks(None);
             trigger_debounced_sync();
         }
 
@@ -907,7 +929,7 @@ pub fn SpecBlockEditor(
                 Some(tree_id_to_key(node_id))
             });
 
-            refresh_blocks();
+            rebuild_blocks(None);
             trigger_debounced_sync();
 
             if let Some(k) = new_key {
