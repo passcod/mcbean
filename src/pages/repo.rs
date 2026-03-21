@@ -333,7 +333,7 @@ pub fn RepoPage() -> impl IntoView {
     let params = use_params_map();
     let repo_id = move || {
         params
-            .read()
+            .get()
             .get("repo_id")
             .and_then(|v| v.parse::<i32>().ok())
             .unwrap_or(0)
