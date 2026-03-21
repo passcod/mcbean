@@ -90,19 +90,32 @@ fn collect_blocks_under(tree: &LoroTree, parent: TreeParentId, out: &mut Vec<Spe
             KIND_RULE => {
                 let text = get_text_str(&meta);
                 let rule_id = get_str(&meta, "rule_id");
+                // Generate HTML that matches the .req/.req-link CSS structure.
+                // commit_edit will replace this with a full marq-rendered version
+                // after the user edits the block; the background render pass in
+                // SpecBlockEditor replaces it with marq HTML shortly after load.
+                let html = format!(
+                    "<div class=\"req\">\
+                     <a class=\"req-link\" id=\"{id}\" href=\"#{id}\">\
+                     <span>r[{id}]</span></a>\
+                     <p>{text}</p>\
+                     </div>",
+                    id = html_escape(&rule_id),
+                    text = html_escape(&text),
+                );
                 out.push(SpecBlock {
                     key: tree_id_to_key(node_id),
                     kind: SpecBlockKind::Rule { id: rule_id, text },
-                    // HTML is rendered client-side via marq on first display.
-                    html: String::new(),
+                    html,
                 });
             }
             KIND_PARA => {
                 let text = get_text_str(&meta);
+                let html = format!("<p>{}</p>", html_escape(&text));
                 out.push(SpecBlock {
                     key: tree_id_to_key(node_id),
                     kind: SpecBlockKind::Paragraph { text },
-                    html: String::new(),
+                    html,
                 });
             }
             _ => {}

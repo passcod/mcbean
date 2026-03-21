@@ -478,6 +478,39 @@ pub fn SpecBlockEditor(
                         synced_vv.set(crate::components::loro_doc::encode_vv(doc));
                     });
                     loaded.set(true);
+
+                    // Background pass: replace the inline HTML stubs with
+                    // proper marq-rendered HTML (RFC 2119 highlighting etc.).
+                    // Each block is rendered individually using the same path
+                    // as commit_edit, so there is no key-reconciliation risk.
+                    let snapshot = blocks_out.get_untracked();
+                    for block in snapshot {
+                        use marq::{RenderOptions, render};
+                        let raw = match &block.kind {
+                            SpecBlockKind::Rule { id, text } => {
+                                format!("r[{}]\n{}\n\n", id, text)
+                            }
+                            SpecBlockKind::Paragraph { text } if !text.is_empty() => {
+                                format!("{}\n\n", text)
+                            }
+                            _ => continue,
+                        };
+                        let key = block.key.clone();
+                        leptos::task::spawn_local(async move {
+                            if let Ok(rdoc) = render(&raw, &RenderOptions::new()).await {
+                                let html = rdoc
+                                    .reqs
+                                    .first()
+                                    .map(|r| r.html.clone())
+                                    .unwrap_or(rdoc.html);
+                                blocks_out.update(|list| {
+                                    if let Some(b) = list.iter_mut().find(|b| b.key == key) {
+                                        b.html = html;
+                                    }
+                                });
+                            }
+                        });
+                    }
                 }
                 Err(e) => {
                     sync_error.set(Some(format!("Failed to load spec: {e}")));
