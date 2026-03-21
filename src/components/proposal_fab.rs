@@ -44,7 +44,7 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
             style:transform=move || {
                 if panel_open.get() { "translateY(0)" } else { "translateY(10px)" }
             }
-            style="position: fixed; bottom: 5rem; right: 1.5rem; \
+            style="position: fixed; bottom: 1.5rem; right: 1.5rem; \
                    width: 320px; background: #fff; border-radius: 12px; \
                    border: 1px solid #e5e7eb; \
                    box-shadow: 0 8px 32px rgba(0,0,0,0.12); \
@@ -56,7 +56,7 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                         padding: 0.875rem 1rem 0.75rem; \
                         border-bottom: 1px solid #f3f4f6;">
                 <span style="font-size: 1rem; font-weight: 600; color: #111827;">
-                    "New Proposal"
+                    "Change Proposal"
                 </span>
                 <button
                     style="border: none; background: none; cursor: pointer; \
