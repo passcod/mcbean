@@ -10,9 +10,18 @@ const TOP_DROP_KEY: &str = "^^top";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SpecBlockKind {
-    Heading { level: u8, text: String },
-    Rule { id: String, text: String },
-    Paragraph { text: String },
+    Heading {
+        level: u8,
+        text: String,
+        anchor: String,
+    },
+    Rule {
+        id: String,
+        text: String,
+    },
+    Paragraph {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -54,7 +63,12 @@ pub fn apply_ops_to_blocks(blocks: &mut Vec<SpecBlock>, ops: &[BlockOp]) {
             BlockOp::EditText { key, text } => {
                 if let Some(b) = blocks.iter_mut().find(|b| b.key == *key) {
                     match &mut b.kind {
-                        SpecBlockKind::Heading { text: t, .. } => *t = text.clone(),
+                        SpecBlockKind::Heading {
+                            text: t, anchor: a, ..
+                        } => {
+                            *t = text.clone();
+                            *a = slugify(text);
+                        }
                         SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
                         SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
                     }
@@ -113,7 +127,12 @@ fn push_op(ops: &mut Vec<BlockOp>, new_op: BlockOp) {
                 match op {
                     BlockOp::InsertBlock { block, .. } if block.key == *key => {
                         match &mut block.kind {
-                            SpecBlockKind::Heading { text: t, .. } => *t = text.clone(),
+                            SpecBlockKind::Heading {
+                                text: t, anchor: a, ..
+                            } => {
+                                *t = text.clone();
+                                *a = slugify(text);
+                            }
                             SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
                             SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
                         }
@@ -332,6 +351,62 @@ pub async fn apply_block_ops(proposal_id: i32, ops: Vec<BlockOp>) -> Result<(), 
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))
 }
 
+// ── Sidebar data ──────────────────────────────────────────────────────────────
+
+/// Build sidebar outline and search entries from a block list.
+/// The proposal is treated as a single spec named after `spec_name`.
+pub fn blocks_to_sidebar_data(
+    blocks: &[SpecBlock],
+    spec_name: &str,
+) -> (
+    Vec<crate::components::sidebar::SpecOutline>,
+    Vec<crate::components::sidebar::SearchEntry>,
+) {
+    use crate::components::sidebar::{HeadingEntry, SearchEntry, SpecOutline};
+
+    let mut headings: Vec<HeadingEntry> = Vec::new();
+    let mut search_entries: Vec<SearchEntry> = Vec::new();
+    let mut current_anchor = String::new();
+
+    for block in blocks {
+        match &block.kind {
+            SpecBlockKind::Heading {
+                level,
+                text,
+                anchor,
+            } => {
+                current_anchor = anchor.clone();
+                headings.push(HeadingEntry {
+                    level: *level,
+                    text: text.clone(),
+                    anchor: anchor.clone(),
+                });
+                search_entries.push(SearchEntry {
+                    spec_name: spec_name.to_string(),
+                    text: text.clone(),
+                    anchor: anchor.clone(),
+                });
+            }
+            SpecBlockKind::Rule { text, .. } | SpecBlockKind::Paragraph { text } => {
+                if !text.is_empty() {
+                    search_entries.push(SearchEntry {
+                        spec_name: spec_name.to_string(),
+                        text: text.clone(),
+                        anchor: current_anchor.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    let outline = vec![SpecOutline {
+        name: spec_name.to_string(),
+        headings,
+    }];
+
+    (outline, search_entries)
+}
+
 // ── Helpers available on both SSR and WASM ────────────────────────────────────
 
 pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
@@ -366,6 +441,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                     kind: SpecBlockKind::Heading {
                         level: h.level,
                         text: h.title.clone(),
+                        anchor: h.id.clone(),
                     },
                     html,
                 });
@@ -409,7 +485,7 @@ pub fn serialize_blocks(blocks: &[SpecBlock]) -> String {
     let mut out = String::new();
     for block in blocks {
         match &block.kind {
-            SpecBlockKind::Heading { level, text } => {
+            SpecBlockKind::Heading { level, text, .. } => {
                 for _ in 0..*level {
                     out.push('#');
                 }
@@ -438,6 +514,20 @@ pub fn serialize_blocks(blocks: &[SpecBlock]) -> String {
 /// soft-wrapped prose.
 fn join_hard_wraps(text: &str) -> String {
     text.lines().collect::<Vec<_>>().join(" ")
+}
+
+/// Convert heading text to a URL-safe anchor id, matching marq's output.
+/// Lowercases, maps spaces and punctuation to hyphens, collapses runs.
+pub fn slugify(text: &str) -> String {
+    let raw: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    raw.split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// Reflow prose so each sentence starts on its own line. First joins any
@@ -638,7 +728,12 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
         blocks.update(|list| {
             if let Some(b) = list.iter_mut().find(|b| b.key == key) {
                 match &mut b.kind {
-                    SpecBlockKind::Heading { text: t, .. } => *t = text.clone(),
+                    SpecBlockKind::Heading {
+                        text: t, anchor: a, ..
+                    } => {
+                        *t = text.clone();
+                        *a = slugify(&text);
+                    }
                     SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
                     SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
                 }
@@ -665,7 +760,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                     SpecBlockKind::Rule { id, text } => {
                         format!("r[{}]\n{}\n\n", id, text)
                     }
-                    SpecBlockKind::Heading { level, text } => {
+                    SpecBlockKind::Heading { level, text, .. } => {
                         format!("{} {}\n\n", "#".repeat(*level as usize), text)
                     }
                     SpecBlockKind::Paragraph { text } => format!("{}\n\n", text),
@@ -828,7 +923,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                 on_insert_heading=Callback::new(move |lvl: u8| {
                     insert_block(
                         TOP_DROP_KEY.to_string(),
-                        SpecBlockKind::Heading { level: lvl, text: String::new() },
+                        SpecBlockKind::Heading { level: lvl, text: String::new(), anchor: String::new() },
                     )
                 })
             />
@@ -854,6 +949,34 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                                 None
                             },
                         );
+                    let heading_anchor: StoredValue<Option<String>> =
+                        StoredValue::new(
+                            if let SpecBlockKind::Heading { anchor, .. } = &block.kind {
+                                Some(anchor.clone())
+                            } else {
+                                None
+                            },
+                        );
+
+                    // Reactive anchor for this block — recomputed from the block
+                    // signal so it stays current after the user edits the heading.
+                    let block_anchor = move || {
+                        if heading_anchor.get_value().is_none() {
+                            return String::new();
+                        }
+                        blocks.with(|list| {
+                            list.iter()
+                                .find(|b| b.key == key.get_value())
+                                .and_then(|b| {
+                                    if let SpecBlockKind::Heading { anchor, .. } = &b.kind {
+                                        Some(anchor.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_default()
+                        })
+                    };
 
                     // Reactive reads of this block's current text and HTML from
                     // the shared signal, so the display stays accurate after edits.
@@ -893,6 +1016,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                         <div
                             class="spec-block-wrapper"
                             class:spec-block--dragging=is_dragging
+                            id=block_anchor
                             // Allow dragging over the block body without showing
                             // the "forbidden" cursor — the InsertBars are the targets.
                             on:dragover=move |e| e.prevent_default()
@@ -1051,8 +1175,12 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                                                             match &mut b.kind {
                                                                 SpecBlockKind::Heading {
                                                                     text: t,
+                                                                    anchor: a,
                                                                     ..
-                                                                } => *t = text.clone(),
+                                                                } => {
+                                                                    *t = text.clone();
+                                                                    *a = slugify(&text);
+                                                                }
                                                                 SpecBlockKind::Rule {
                                                                     text: t,
                                                                     ..
@@ -1106,6 +1234,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoVie
                                         SpecBlockKind::Heading {
                                             level: lvl,
                                             text: String::new(),
+                                            anchor: String::new(),
                                         },
                                     )
                                 })

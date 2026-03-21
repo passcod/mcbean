@@ -10,4 +10,4 @@ pub use finalise_fab::FinaliseFab;
 pub use nav::Nav;
 pub use proposal_fab::ProposalFab;
 pub use sidebar::{HeadingEntry, SearchEntry, SpecOutline, SpecSidebar};
-pub use spec_block_editor::{SpecBlock, SpecBlockEditor, SpecBlockKind};
+pub use spec_block_editor::{SpecBlock, SpecBlockEditor, SpecBlockKind, blocks_to_sidebar_data};

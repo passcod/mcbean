@@ -3,7 +3,9 @@ use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{FinaliseFab, SpecBlock, SpecBlockEditor};
+use crate::components::{
+    FinaliseFab, SpecBlock, SpecBlockEditor, SpecSidebar, blocks_to_sidebar_data,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProposalDetail {
@@ -243,6 +245,7 @@ pub fn ProposalPage() -> impl IntoView {
                             let status = p.status.clone();
                             let is_drafting = status == "drafting";
                             let initial_title = display_title.clone();
+                            let sidebar_title = display_title.clone();
 
                             view! {
                                 <Title text=display_title.clone()/>
@@ -363,48 +366,63 @@ pub fn ProposalPage() -> impl IntoView {
                                             .get()
                                             .map(|result: Result<Vec<SpecBlock>, _>| match result {
                                                 Ok(blocks) if is_drafting => {
-                                                    // r[impl edit.rule-text]
-                                                    // r[impl edit.add-rule]
-                                                    // r[impl edit.add-section]
-                                                    // r[impl edit.reorder]
-                                                    // r[impl edit.delete]
-                                                    view! {
-                                                        <SpecBlockEditor
-                                                            blocks=blocks
-                                                            proposal_id=p.id
-                                                        />
-                                                    }
-                                                    .into_any()
-                                                }
-                                                Ok(blocks) => {
-                                                    view! {
-                                                        <div class="spec-readonly">
-                                                            {blocks
-                                                                .into_iter()
-                                                                .map(|b| {
-                                                                    let html = b.html.clone();
-                                                                    let text = b
-                                                                        .edit_text()
-                                                                        .to_owned();
+                                                                    // r[impl edit.rule-text]
+                                                                    // r[impl edit.add-rule]
+                                                                    // r[impl edit.add-section]
+                                                                    // r[impl edit.reorder]
+                                                                    // r[impl edit.delete]
+                                                                    let (outline, search_entries) =
+                                                                        blocks_to_sidebar_data(&blocks, &sidebar_title);
                                                                     view! {
-                                                                        <div class="content mb-3">
-                                                                            {if html.is_empty() {
-                                                                                view! { <p>{text}</p> }
-                                                                                    .into_any()
-                                                                            } else {
-                                                                                view! {
-                                                                                    <div inner_html=html />
-                                                                                }
-                                                                                    .into_any()
-                                                                            }}
+                                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+                                                                            <SpecSidebar outline=outline search_entries=search_entries />
+                                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                                                                                <SpecBlockEditor
+                                                                                    blocks=blocks
+                                                                                    proposal_id=p.id
+                                                                                />
+                                                                            </div>
                                                                         </div>
                                                                     }
-                                                                })
-                                                                .collect::<Vec<_>>()}
-                                                        </div>
-                                                    }
-                                                    .into_any()
-                                                }
+                                                                    .into_any()
+                                                                }
+                                                                Ok(blocks) => {
+                                                                    let title = sidebar_title.clone();
+                                                                    let (outline, search_entries) =
+                                                                        blocks_to_sidebar_data(&blocks, &title);
+                                                                    view! {
+                                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+                                                                            <SpecSidebar outline=outline search_entries=search_entries />
+                                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                                                                                <div class="spec-readonly">
+                                                                                    {blocks
+                                                                                        .into_iter()
+                                                                                        .map(|b| {
+                                                                                            let html = b.html.clone();
+                                                                                            let text = b
+                                                                                                .edit_text()
+                                                                                                .to_owned();
+                                                                                            view! {
+                                                                                                <div class="content mb-3">
+                                                                                                    {if html.is_empty() {
+                                                                                                        view! { <p>{text}</p> }
+                                                                                                            .into_any()
+                                                                                                    } else {
+                                                                                                        view! {
+                                                                                                            <div inner_html=html />
+                                                                                                        }
+                                                                                                            .into_any()
+                                                                                                    }}
+                                                                                                </div>
+                                                                                            }
+                                                                                        })
+                                                                                        .collect::<Vec<_>>()}
+                                                                                </div>
+                                                                            </div>
+                                                                        </div>
+                                                                    }
+                                                                    .into_any()
+                                                                }
                                                 Err(e) => view! {
                                                     <div class="notification is-danger">
                                                         {format!("Error loading spec: {e}")}
