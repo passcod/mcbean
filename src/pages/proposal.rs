@@ -1,5 +1,5 @@
 use leptos::prelude::*;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
 use crate::components::Editor;
@@ -132,89 +132,6 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .await
     .map_err(|e| ServerFnError::new(format!("{e}")))?
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
-}
-
-#[component]
-pub fn NewProposalPage() -> impl IntoView {
-    let params = use_params_map();
-    let repo_id = move || {
-        params
-            .read()
-            .get("repo_id")
-            .and_then(|v| v.parse::<i32>().ok())
-            .unwrap_or(0)
-    };
-
-    let title = RwSignal::new(String::new());
-    let navigate = use_navigate();
-    let create_action = Action::new(move |_: &()| {
-        let t = title.get();
-        let rid = repo_id();
-        async move { create_proposal(rid, t).await }
-    });
-
-    Effect::new(move |_| {
-        if let Some(Ok(new_id)) = create_action.value().get() {
-            navigate(
-                &format!("/repo/{}/proposal/{}", repo_id(), new_id),
-                Default::default(),
-            );
-        }
-    });
-
-    view! {
-        <h1 class="title">"New Proposal"</h1>
-
-        {move || {
-            create_action
-                .value()
-                .get()
-                .and_then(|r| r.err())
-                .map(|e| {
-                    view! {
-                        <div class="notification is-danger">{format!("Error: {e}")}</div>
-                    }
-                })
-        }}
-
-        <div class="box">
-            <div class="field">
-                // r[impl proposal.create.dismiss]
-                <label class="label">"Title (optional)"</label>
-                <div class="control">
-                    <input
-                        class="input"
-                        type="text"
-                        placeholder="Proposal title"
-                        prop:value=move || title.get()
-                        on:input=move |ev| {
-                            title.set(event_target_value(&ev));
-                        }
-                    />
-                </div>
-            </div>
-
-            <div class="field">
-                <div class="control">
-                    <button
-                        class="button is-primary"
-                        on:click=move |_| {
-                            create_action.dispatch(());
-                        }
-                        disabled=move || create_action.pending().get()
-                    >
-                        {move || {
-                            if create_action.pending().get() {
-                                "Creating..."
-                            } else {
-                                "Create Proposal"
-                            }
-                        }}
-                    </button>
-                </div>
-            </div>
-        </div>
-    }
 }
 
 #[component]

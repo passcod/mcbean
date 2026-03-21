@@ -1,5 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
+
+use crate::components::ProposalFab;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{HeadingEntry, SearchEntry, SpecOutline, SpecSidebar};
@@ -288,24 +290,14 @@ pub fn RepoPage() -> impl IntoView {
                                 <div class="level-left">
                                     <div class="level-item">
                                         <div>
-                                            <h1 class="title mb-1">{label}</h1>
+                                            <h1 class="title mb-1">{label.clone()}</h1>
                                             <p class="subtitle is-6">
                                                 <a href=url_href target="_blank">{url_text}</a>
                                             </p>
                                         </div>
                                     </div>
                                 </div>
-                                <div class="level-right">
-                                    <div class="level-item">
-                                        // r[impl users.collaboration]
-                                        <a
-                                            class="button is-primary"
-                                            href=move || format!("/repo/{}/proposal/new", repo_id())
-                                        >
-                                            "Propose a Change"
-                                        </a>
-                                    </div>
-                                </div>
+
                             </div>
                         }.into_any()
                     }
@@ -408,5 +400,8 @@ pub fn RepoPage() -> impl IntoView {
                 })
             }}
         </Suspense>
+
+        // r[impl users.collaboration]
+        <ProposalFab repo_id=repo_id() />
     }
 }

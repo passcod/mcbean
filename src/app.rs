@@ -3,7 +3,7 @@ use leptos_meta::*;
 use leptos_router::{components::*, path};
 
 use crate::components::Nav;
-use crate::pages::{HomePage, NewProposalPage, ProposalPage, RepoPage};
+use crate::pages::{HomePage, ProposalPage, RepoPage};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -18,7 +18,6 @@ pub fn App() -> impl IntoView {
                         <Route path=path!("/") view=HomePage />
                         <Route path=path!("/repo/:repo_id") view=RepoPage />
 
-                        <Route path=path!("/repo/:repo_id/proposal/new") view=NewProposalPage />
                         <Route
                             path=path!("/repo/:repo_id/proposal/:proposal_id")
                             view=ProposalPage
