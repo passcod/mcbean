@@ -17,10 +17,8 @@ pub enum SpecBlockKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SpecBlock {
-    /// Stable identity key — used for Leptos list keying only, not persisted.
     pub key: String,
     pub kind: SpecBlockKind,
-    /// Pre-rendered HTML for display mode. Empty for newly created blocks.
     pub html: String,
 }
 
@@ -32,6 +30,306 @@ impl SpecBlock {
             SpecBlockKind::Paragraph { text } => text,
         }
     }
+}
+
+// ── Block operations ──────────────────────────────────────────────────────────
+
+/// An individual editing operation. The client queues these locally and ships
+/// them to the server in batches; the server applies them in order to the
+/// latest snapshot.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum BlockOp {
+    EditText { key: String, text: String },
+    DeleteBlock { key: String },
+    MoveBlock { key: String, after_key: String },
+    InsertBlock { after_key: String, block: SpecBlock },
+}
+
+/// Apply a slice of ops to a block list in order.
+/// Used by the server inside `apply_block_ops` and available for unit tests.
+pub fn apply_ops_to_blocks(blocks: &mut Vec<SpecBlock>, ops: &[BlockOp]) {
+    for op in ops {
+        match op {
+            BlockOp::EditText { key, text } => {
+                if let Some(b) = blocks.iter_mut().find(|b| b.key == *key) {
+                    match &mut b.kind {
+                        SpecBlockKind::Heading { text: t, .. } => *t = text.clone(),
+                        SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
+                        SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
+                    }
+                    b.html.clear();
+                }
+            }
+            BlockOp::DeleteBlock { key } => {
+                blocks.retain(|b| b.key != *key);
+            }
+            BlockOp::MoveBlock { key, after_key } => {
+                let Some(fi) = blocks.iter().position(|b| b.key == *key) else {
+                    continue;
+                };
+                let item = blocks.remove(fi);
+                let pos = if after_key == TOP_DROP_KEY {
+                    0
+                } else {
+                    blocks
+                        .iter()
+                        .position(|b| b.key == *after_key)
+                        .map(|i| i + 1)
+                        .unwrap_or(blocks.len())
+                };
+                blocks.insert(pos, item);
+            }
+            BlockOp::InsertBlock { after_key, block } => {
+                let pos = if after_key == TOP_DROP_KEY {
+                    0
+                } else {
+                    blocks
+                        .iter()
+                        .position(|b| b.key == *after_key)
+                        .map(|i| i + 1)
+                        .unwrap_or(blocks.len())
+                };
+                blocks.insert(pos, block.clone());
+            }
+        }
+    }
+}
+
+/// Push `new_op` onto the queue with coalescing:
+///
+/// - `EditText` for a key: update an existing `InsertBlock` or `EditText` for
+///   that key in place — never send stale intermediate states.
+/// - `DeleteBlock` for a key: purge all ops that touch that key. If one of
+///   those was an `InsertBlock`, skip the delete too (the block never reached
+///   the server).
+/// - `MoveBlock` for a key: replace any prior `MoveBlock` for the same key.
+/// - `InsertBlock`: always append (each new block has a unique key).
+#[cfg(feature = "hydrate")]
+fn push_op(ops: &mut Vec<BlockOp>, new_op: BlockOp) {
+    match &new_op {
+        BlockOp::EditText { key, text } => {
+            for op in ops.iter_mut() {
+                match op {
+                    BlockOp::InsertBlock { block, .. } if block.key == *key => {
+                        match &mut block.kind {
+                            SpecBlockKind::Heading { text: t, .. } => *t = text.clone(),
+                            SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
+                            SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
+                        }
+                        return;
+                    }
+                    BlockOp::EditText { key: k, text: t } if k == key => {
+                        *t = text.clone();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            ops.push(new_op);
+        }
+        BlockOp::DeleteBlock { key } => {
+            let had_pending_insert = ops
+                .iter()
+                .any(|op| matches!(op, BlockOp::InsertBlock { block, .. } if block.key == *key));
+            ops.retain(|op| match op {
+                BlockOp::EditText { key: k, .. } => k != key,
+                BlockOp::InsertBlock { block, .. } => &block.key != key,
+                BlockOp::MoveBlock { key: k, .. } => k != key,
+                BlockOp::DeleteBlock { key: k } => k != key,
+            });
+            if !had_pending_insert {
+                ops.push(new_op);
+            }
+        }
+        BlockOp::MoveBlock { key, .. } => {
+            ops.retain(|op| !matches!(op, BlockOp::MoveBlock { key: k, .. } if k == key));
+            ops.push(new_op);
+        }
+        BlockOp::InsertBlock { .. } => {
+            ops.push(new_op);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_queue(proposal_id: i32) -> Vec<BlockOp> {
+    (|| -> Option<Vec<BlockOp>> {
+        let storage = web_sys::window()?.local_storage().ok()??;
+        let json = storage
+            .get_item(&format!("mcbean_ops_{proposal_id}"))
+            .ok()??;
+        serde_json::from_str(&json).ok()
+    })()
+    .unwrap_or_default()
+}
+
+#[cfg(feature = "hydrate")]
+fn persist_queue(proposal_id: i32, ops: &[BlockOp]) {
+    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+        return;
+    };
+    let key = format!("mcbean_ops_{proposal_id}");
+    if ops.is_empty() {
+        let _ = storage.remove_item(&key);
+    } else if let Ok(json) = serde_json::to_string(ops) {
+        let _ = storage.set_item(&key, &json);
+    }
+}
+
+/// Flush pending ops to the server with exponential backoff on failure.
+/// Loops until the queue is empty or the retry limit is hit.
+/// Backoff: 2^retry seconds, capped at 5 minutes. Maximum 8 retries.
+#[cfg(feature = "hydrate")]
+async fn do_flush(
+    proposal_id: i32,
+    pending_ops: RwSignal<Vec<BlockOp>>,
+    flush_running: RwSignal<bool>,
+    retry_count: RwSignal<u32>,
+    save_error: RwSignal<Option<String>>,
+) {
+    use gloo_timers::future::TimeoutFuture;
+    const MAX_RETRIES: u32 = 8;
+
+    loop {
+        let retry = retry_count.get_untracked();
+        if retry > 0 {
+            let delay_ms = (1_000u32 << retry.min(8)).min(300_000);
+            TimeoutFuture::new(delay_ms).await;
+        }
+
+        let ops = pending_ops.get_untracked();
+        if ops.is_empty() {
+            break;
+        }
+        let n = ops.len();
+
+        match apply_block_ops(proposal_id, ops).await {
+            Ok(()) => {
+                pending_ops.update(|q| {
+                    q.drain(..n);
+                });
+                retry_count.set(0);
+                save_error.set(None);
+                if pending_ops.get_untracked().is_empty() {
+                    break;
+                }
+                // More ops arrived while we were sending; loop immediately.
+            }
+            Err(e) => {
+                let next = retry + 1;
+                retry_count.set(next);
+                if next >= MAX_RETRIES {
+                    save_error.set(Some(format!(
+                        "Failed to save after {MAX_RETRIES} attempts: {e}"
+                    )));
+                    break;
+                }
+                // Loop to apply backoff delay then retry.
+            }
+        }
+    }
+
+    flush_running.set(false);
+}
+
+/// Enqueue an op on the hydrate path; no-op during SSR.
+#[cfg(feature = "hydrate")]
+fn enqueue(pending_ops: RwSignal<Vec<BlockOp>>, op: BlockOp) {
+    pending_ops.update(|ops| push_op(ops, op));
+}
+
+#[cfg(not(feature = "hydrate"))]
+fn enqueue(_pending_ops: RwSignal<Vec<BlockOp>>, _op: BlockOp) {}
+
+// r[impl edit.history]
+#[server(input = server_fn::codec::Json)]
+pub async fn apply_block_ops(proposal_id: i32, ops: Vec<BlockOp>) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    if ops.is_empty() {
+        return Ok(());
+    }
+
+    let user_id = crate::auth::get_or_create_user_id().await?;
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let (repository_id, latest_snapshot): (i32, Option<String>) = conn
+        .interact(move |conn| {
+            use crate::db::schema::{proposal_changes, proposals};
+
+            let repo_id: i32 = proposals::table
+                .find(proposal_id)
+                .select(proposals::repository_id)
+                .first(conn)?;
+
+            let snapshot: Option<String> = proposal_changes::table
+                .filter(proposal_changes::proposal_id.eq(proposal_id))
+                .order(proposal_changes::id.desc())
+                .select(proposal_changes::content_snapshot)
+                .first(conn)
+                .optional()?;
+
+            Ok::<_, diesel::result::Error>((repo_id, snapshot))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
+    let content = if let Some(s) = latest_snapshot {
+        s
+    } else {
+        conn.interact(move |conn| {
+            use crate::db::schema::{spec_files, specs};
+
+            let contents: Vec<String> = spec_files::table
+                .inner_join(specs::table)
+                .filter(specs::repository_id.eq(repository_id))
+                .order((specs::name.asc(), spec_files::path.asc()))
+                .select(spec_files::content)
+                .load(conn)?;
+
+            Ok::<_, diesel::result::Error>(contents.join("\n\n"))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?
+    };
+
+    let mut blocks = parse_blocks_from_content(&content).await;
+    apply_ops_to_blocks(&mut blocks, &ops);
+    let new_content = serialize_blocks(&blocks);
+
+    conn.interact(move |conn| {
+        use crate::db::schema::proposal_changes;
+
+        let parent_id: Option<i32> = proposal_changes::table
+            .filter(proposal_changes::proposal_id.eq(proposal_id))
+            .order(proposal_changes::id.desc())
+            .select(proposal_changes::id)
+            .first(conn)
+            .optional()?;
+
+        diesel::insert_into(proposal_changes::table)
+            .values((
+                proposal_changes::proposal_id.eq(proposal_id),
+                proposal_changes::parent_change_id.eq(parent_id),
+                proposal_changes::user_id.eq(user_id),
+                proposal_changes::change_type.eq("edit"),
+                proposal_changes::content_snapshot.eq(&new_content),
+            ))
+            .execute(conn)?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))
 }
 
 // ── Helpers available on both SSR and WASM ────────────────────────────────────
@@ -137,8 +435,7 @@ pub fn serialize_blocks(blocks: &[SpecBlock]) -> String {
 }
 
 /// Collapse single newlines (hard wraps) into spaces so the textarea shows
-/// soft-wrapped prose. Double newlines are not expected inside a single block
-/// but are left intact as a safety measure.
+/// soft-wrapped prose.
 fn join_hard_wraps(text: &str) -> String {
     text.lines().collect::<Vec<_>>().join(" ")
 }
@@ -158,12 +455,10 @@ fn reflow_sentences(text: &str) -> String {
         let c = chars[i];
         out.push(c);
         if matches!(c, '.' | '?' | '!') {
-            // Scan past any trailing spaces after the punctuation.
             let mut j = i + 1;
             while j < len && chars[j] == ' ' {
                 j += 1;
             }
-            // Sentence boundary: end of string, or the next word starts uppercase.
             if j == len || chars[j].is_uppercase() {
                 if j < len {
                     out.push('\n');
@@ -214,7 +509,7 @@ pub fn next_provisional_id() -> String {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 #[component]
-pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>) -> impl IntoView {
+pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoView {
     let blocks = RwSignal::new(blocks);
 
     // Key of the block whose textarea is currently open.
@@ -222,24 +517,110 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
     // Live content of the open textarea.
     let edit_draft = RwSignal::new(String::new());
 
-    // HTML5 drag-and-drop: which block is being dragged, which insert bar is the drop target.
+    // HTML5 drag-and-drop state.
     let drag_key: RwSignal<Option<String>> = RwSignal::new(None);
     let drag_over_bar: RwSignal<Option<String>> = RwSignal::new(None);
 
-    // Opens the textarea for a block, seeding the draft from its current text.
+    // ── Save queue ────────────────────────────────────────────────────────────
+
+    // Load any ops that survived a previous session from localStorage.
+    let pending_ops: RwSignal<Vec<BlockOp>> = RwSignal::new({
+        #[cfg(feature = "hydrate")]
+        {
+            load_queue(proposal_id)
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            Vec::new()
+        }
+    });
+    let flush_running = RwSignal::new(false);
+    let retry_count = RwSignal::new(0u32);
+    let save_error: RwSignal<Option<String>> = RwSignal::new(None);
+
+    // Monotonically increasing counter; the in-flight debounce task compares
+    // its captured generation against this to detect supersession.
+    let debounce_gen = RwSignal::new(0u32);
+
+    // Both proposal_id and debounce_gen are only referenced inside
+    // #[cfg(feature = "hydrate")] blocks; suppress the SSR-build warnings.
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (proposal_id, debounce_gen);
+
+    // Sync queue to localStorage on every change so offline edits survive a
+    // page reload.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        let ops = pending_ops.get();
+        persist_queue(proposal_id, &ops);
+    });
+
+    // Spawn a flush task whenever ops are waiting and no flush is running.
+    // save_error is a tracked dep so that clearing it (retry button) re-arms
+    // the trigger without needing a new edit.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        let ops = pending_ops.get();
+        let error = save_error.get();
+        if !ops.is_empty() && error.is_none() && !flush_running.get_untracked() {
+            flush_running.set(true);
+            leptos::task::spawn_local(async move {
+                do_flush(
+                    proposal_id,
+                    pending_ops,
+                    flush_running,
+                    retry_count,
+                    save_error,
+                )
+                .await;
+            });
+        }
+    });
+
+    // Register / clear the beforeunload guard so the browser warns when the
+    // user tries to close the tab while changes have not reached the server.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        use wasm_bindgen::JsCast as _;
+        use wasm_bindgen::prelude::Closure;
+
+        let has_pending = !pending_ops.get().is_empty();
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        if has_pending {
+            let cb = Closure::<dyn Fn(web_sys::BeforeUnloadEvent)>::new(
+                |ev: web_sys::BeforeUnloadEvent| {
+                    ev.prevent_default();
+                    ev.set_return_value("Changes not yet saved to server.");
+                },
+            );
+            window.set_onbeforeunload(Some(cb.as_ref().unchecked_ref()));
+            cb.forget();
+        } else {
+            window.set_onbeforeunload(None);
+        }
+    });
+
+    // ── Editing helpers ───────────────────────────────────────────────────────
+
     let open_edit = move |key: String, text: String| {
         edit_draft.set(text);
         editing_key.set(Some(key));
     };
 
-    // Writes the textarea draft back into the block list, closes the editor,
-    // and triggers an immediate server save. Called on textarea blur.
-    // Skips the save entirely when the text hasn't changed, so we don't
-    // produce spurious proposal_change history entries.
+    // Commits the current textarea draft: cancels the debounce timer, updates
+    // the local block signal for display, enqueues an EditText op, closes the
+    // editor, and triggers a client-side HTML re-render. Called on blur.
     let commit_edit = move || {
         let Some(key) = editing_key.get_untracked() else {
             return;
         };
+
+        // Cancel any in-flight debounce so it doesn't double-queue.
+        #[cfg(feature = "hydrate")]
+        debounce_gen.update(|g| *g = g.wrapping_add(1));
+
         editing_key.set(None);
 
         let text = edit_draft.get_untracked();
@@ -261,14 +642,17 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                     SpecBlockKind::Rule { text: t, .. } => *t = text.clone(),
                     SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
                 }
-                // Clear stale rendered HTML; display falls back to plain text
-                // until the server re-renders on next load.
                 b.html.clear();
             }
         });
 
-        // r[impl edit.history]
-        on_save.run(blocks.get_untracked());
+        enqueue(
+            pending_ops,
+            BlockOp::EditText {
+                key: key.clone(),
+                text: text.clone(),
+            },
+        );
 
         // Re-render the edited block's HTML in the browser without a server
         // round-trip. blocks already has the updated text from above.
@@ -276,7 +660,6 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
         {
             use marq::{RenderOptions, render};
 
-            // Reconstruct the minimal raw markdown for just this one block.
             let raw = blocks.with_untracked(|list| {
                 list.iter().find(|b| b.key == key).map(|b| match &b.kind {
                     SpecBlockKind::Rule { id, text } => {
@@ -292,9 +675,6 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
             if let Some(raw) = raw {
                 leptos::task::spawn_local(async move {
                     if let Ok(doc) = render(&raw, &RenderOptions::new()).await {
-                        // For rules use the req content HTML (prose only), matching
-                        // how parse_blocks_from_content populates b.html on first load.
-                        // For headings and paragraphs use the full doc.html.
                         let new_html = if let Some(req) = doc.reqs.first() {
                             req.html.clone()
                         } else {
@@ -311,22 +691,30 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
         }
     };
 
-    // Closes the editor without writing the draft, reverting the visible text.
-    let revert_edit = move || editing_key.set(None);
+    // Closes the editor without saving; also cancels any pending debounce.
+    let revert_edit = move || {
+        #[cfg(feature = "hydrate")]
+        debounce_gen.update(|g| *g = g.wrapping_add(1));
+        editing_key.set(None);
+    };
 
     // r[impl edit.delete]
     let delete_block = move |key: String| {
+        // Cancel the debounce if we're deleting the block currently being
+        // edited so the timer doesn't later queue a stale EditText for a
+        // block that no longer exists on the server.
+        #[cfg(feature = "hydrate")]
+        if editing_key.get_untracked().as_deref() == Some(&key) {
+            debounce_gen.update(|g| *g = g.wrapping_add(1));
+        }
         if editing_key.get_untracked().as_deref() == Some(&key) {
             editing_key.set(None);
         }
         blocks.update(|list| list.retain(|b| b.key != key));
-        on_save.run(blocks.get_untracked());
+        enqueue(pending_ops, BlockOp::DeleteBlock { key });
     };
 
     // r[impl edit.reorder]
-    // Moves the dragged block to the position indicated by drop_key.
-    // drop_key is either TOP_DROP_KEY (insert at position 0) or a block key
-    // meaning "insert after this block".
     let handle_drop = move |from_key: String, drop_key: String| {
         if from_key == drop_key {
             drag_key.set(None);
@@ -350,10 +738,15 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
         });
         drag_key.set(None);
         drag_over_bar.set(None);
-        on_save.run(blocks.get_untracked());
+        enqueue(
+            pending_ops,
+            BlockOp::MoveBlock {
+                key: from_key,
+                after_key: drop_key,
+            },
+        );
     };
 
-    // Inserts a new block at the position given by after_key (same convention as drop_key).
     // r[impl edit.add-rule]
     // r[impl edit.add-section]
     let insert_block = move |after_key: String, kind: SpecBlockKind| {
@@ -363,6 +756,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
             kind,
             html: String::new(),
         };
+        let block_for_queue = new_block.clone();
         blocks.update(|list| {
             let pos = if after_key == TOP_DROP_KEY {
                 0
@@ -374,11 +768,48 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
             };
             list.insert(pos, new_block);
         });
+        enqueue(
+            pending_ops,
+            BlockOp::InsertBlock {
+                after_key,
+                block: block_for_queue,
+            },
+        );
         open_edit(new_key, String::new());
     };
 
     view! {
         <div class="spec-block-editor">
+
+            // ── Save status indicator ─────────────────────────────────────────
+            {move || {
+                let error = save_error.get();
+                let pending = !pending_ops.get().is_empty();
+                let flushing = flush_running.get();
+                if let Some(err) = error {
+                    view! {
+                        <div class="notification is-danger is-light mb-3">
+                            <strong>"Save error: "</strong>
+                            {err}
+                            <button
+                                class="button is-small is-danger is-outlined ml-3"
+                                on:click=move |_| {
+                                    save_error.set(None);
+                                    retry_count.set(0);
+                                }
+                            >
+                                "Retry"
+                            </button>
+                        </div>
+                    }
+                    .into_any()
+                } else if pending || flushing {
+                    view! { <p class="help is-info mb-2">"Saving\u{2026}"</p> }.into_any()
+                } else {
+                    view! { <span /> }.into_any()
+                }
+            }}
+
             // Insert bar above all blocks.
             <InsertBar
                 drop_key=TOP_DROP_KEY.to_string()
@@ -424,7 +855,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                             },
                         );
 
-                    // Reactive read of this block's current text and HTML from
+                    // Reactive reads of this block's current text and HTML from
                     // the shared signal, so the display stays accurate after edits.
                     let block_html = move || {
                         blocks.with(|list| {
@@ -448,8 +879,8 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                     let is_dragging =
                         move || drag_key.get().as_deref() == Some(&key.get_value());
 
-                    // Font styling for the textarea — headings get a matching size/weight
-                    // so the textarea fills approximately the same vertical space.
+                    // Font styling for the textarea so headings fill roughly the
+                    // same vertical space as their rendered counterpart.
                     let (ta_font_size, ta_font_weight) = match block.kind {
                         SpecBlockKind::Heading { level: 1, .. } => ("2rem", "bold"),
                         SpecBlockKind::Heading { level: 2, .. } => ("1.5rem", "bold"),
@@ -463,12 +894,11 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                             class="spec-block-wrapper"
                             class:spec-block--dragging=is_dragging
                             // Allow dragging over the block body without showing
-                            // the "forbidden" cursor — the InsertBars are the real targets.
+                            // the "forbidden" cursor — the InsertBars are the targets.
                             on:dragover=move |e| e.prevent_default()
                         >
                             // ── Header row ───────────────────────────────────
                             <div class="spec-block-header">
-                                // Only the handle is draggable; clicking the body opens the editor.
                                 <span
                                     class="spec-block-drag-handle"
                                     title="Drag to reorder"
@@ -485,7 +915,6 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                     "⠿"
                                 </span>
 
-                                // Type badge.
                                 {move || {
                                     rule_id.with_value(|rid| {
                                         if let Some(id) = rid {
@@ -524,8 +953,9 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                             </div>
 
                             // ── Block body ────────────────────────────────────
-                            // Show either the textarea (editing) or the rendered display (reading).
-                            // Clicking anywhere on the display opens the textarea for this block.
+                            // Show either the textarea (editing) or the rendered
+                            // display (reading). Clicking anywhere on the display
+                            // opens the textarea for this block.
                             <Show
                                 when=is_editing
                                 fallback=move || {
@@ -564,34 +994,86 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                 // r[impl edit.rule-text]
                                 // grow-wrap uses the CSS grid shadow-twin trick so the textarea
                                 // auto-sizes in browsers without field-sizing:content (Firefox).
-                                // The ::after pseudo-element mirrors the content via
-                                // data-replicated-value and occupies the same grid cell, driving
-                                // the container height. field-sizing:content is kept as a
-                                // @supports enhancement for browsers that have it.
-                                // Font metrics live on the wrapper so both the textarea and the
-                                // ::after inherit identical sizing.
+                                // The mirror div drives the container height; the textarea
+                                // occupies the same grid cell. Font metrics are shared so both
+                                // size identically. Trailing space prevents last-line collapse.
                                 <div
                                     class="grow-wrap"
                                     style:font-size=ta_font_size
                                     style:font-weight=ta_font_weight
                                 >
-                                    // Mirror div: sits in the same grid cell as the textarea
-                                    // and drives the row height through its text content.
-                                    // Wired directly to edit_draft — no attr()/::after needed,
-                                    // so this works in Firefox and every other browser.
-                                    // Trailing space prevents the last line collapsing when
-                                    // the content ends with a newline.
-                                    <div
-                                        class="grow-wrap-mirror"
-                                        aria-hidden="true"
-                                    >
+                                    <div class="grow-wrap-mirror" aria-hidden="true">
                                         {move || format!("{} ", edit_draft.get())}
                                     </div>
                                     <textarea
                                         class="spec-block-textarea"
                                         autofocus=true
                                         prop:value=move || edit_draft.get()
-                                        on:input=move |ev| edit_draft.set(event_target_value(&ev))
+                                        on:input=move |ev| {
+                                            edit_draft.set(event_target_value(&ev));
+
+                                            // Debounce: push an EditText op 1.5 s after the
+                                            // last keystroke while the textarea is still open,
+                                            // so long editing sessions are saved incrementally
+                                            // without requiring the user to blur. Blur still
+                                            // pushes a final op when the editor closes.
+                                            #[cfg(feature = "hydrate")]
+                                            {
+                                                use gloo_timers::future::TimeoutFuture;
+
+                                                let dgen = debounce_gen
+                                                    .get_untracked()
+                                                    .wrapping_add(1);
+                                                debounce_gen.set(dgen);
+                                                let key_snap = editing_key.get_untracked();
+                                                leptos::task::spawn_local(async move {
+                                                    TimeoutFuture::new(1_500).await;
+                                                    if debounce_gen.get_untracked() != dgen {
+                                                        return;
+                                                    }
+                                                    let Some(key) = key_snap else { return };
+                                                    let text = edit_draft.get_untracked();
+                                                    let changed =
+                                                        blocks.with_untracked(|list| {
+                                                            list.iter()
+                                                                .find(|b| b.key == key)
+                                                                .is_some_and(|b| {
+                                                                    b.edit_text() != text
+                                                                })
+                                                        });
+                                                    if !changed {
+                                                        return;
+                                                    }
+                                                    blocks.update(|list| {
+                                                        if let Some(b) = list
+                                                            .iter_mut()
+                                                            .find(|b| b.key == key)
+                                                        {
+                                                            match &mut b.kind {
+                                                                SpecBlockKind::Heading {
+                                                                    text: t,
+                                                                    ..
+                                                                } => *t = text.clone(),
+                                                                SpecBlockKind::Rule {
+                                                                    text: t,
+                                                                    ..
+                                                                } => *t = text.clone(),
+                                                                SpecBlockKind::Paragraph {
+                                                                    text: t,
+                                                                } => *t = text.clone(),
+                                                            }
+                                                            b.html.clear();
+                                                        }
+                                                    });
+                                                    pending_ops.update(|ops| {
+                                                        push_op(
+                                                            ops,
+                                                            BlockOp::EditText { key, text },
+                                                        )
+                                                    });
+                                                });
+                                            }
+                                        }
                                         on:blur=move |_| commit_edit()
                                         on:keydown=move |ev| {
                                             if ev.key() == "Escape" {
@@ -622,7 +1104,10 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                 on_insert_heading=Callback::new(move |lvl: u8| {
                                     insert_block(
                                         key.get_value(),
-                                        SpecBlockKind::Heading { level: lvl, text: String::new() },
+                                        SpecBlockKind::Heading {
+                                            level: lvl,
+                                            text: String::new(),
+                                        },
                                     )
                                 })
                             />
@@ -630,7 +1115,6 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                     }
                 }
             />
-
         </div>
     }
 }
@@ -722,10 +1206,19 @@ fn InsertBar(
                                 class="insert-bar-option"
                                 on:click=move |_| {
                                     menu_open.set(false);
+                                    on_insert_heading.run(1);
+                                }
+                            >
+                                "H1"
+                            </button>
+                            <button
+                                class="insert-bar-option"
+                                on:click=move |_| {
+                                    menu_open.set(false);
                                     on_insert_heading.run(2);
                                 }
                             >
-                                "Section (H2)"
+                                "H2"
                             </button>
                             <button
                                 class="insert-bar-option"
@@ -734,7 +1227,7 @@ fn InsertBar(
                                     on_insert_heading.run(3);
                                 }
                             >
-                                "Subsection (H3)"
+                                "H3"
                             </button>
                             <button
                                 class="insert-bar-option"
@@ -743,7 +1236,7 @@ fn InsertBar(
                                     on_insert_heading.run(4);
                                 }
                             >
-                                "Sub-subsection (H4)"
+                                "H4"
                             </button>
                         </div>
                     </Show>

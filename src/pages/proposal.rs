@@ -118,56 +118,6 @@ pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, Ser
     Ok(parse_blocks_from_content(&content).await)
 }
 
-// r[impl edit.history]
-#[server(input = server_fn::codec::Json)]
-pub async fn save_proposal_blocks(
-    proposal_id: i32,
-    blocks: Vec<SpecBlock>,
-) -> Result<(), ServerFnError> {
-    use diesel::prelude::*;
-
-    use crate::components::spec_block_editor::serialize_blocks;
-
-    // r[impl users.identity]
-    let user_id = crate::auth::get_or_create_user_id().await?;
-
-    let content = serialize_blocks(&blocks);
-
-    let pool =
-        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-
-    conn.interact(move |conn| {
-        use crate::db::schema::proposal_changes;
-
-        // Find the current head of the change chain to use as parent (undo chain).
-        let parent_id: Option<i32> = proposal_changes::table
-            .filter(proposal_changes::proposal_id.eq(proposal_id))
-            .order(proposal_changes::id.desc())
-            .select(proposal_changes::id)
-            .first(conn)
-            .optional()?;
-
-        diesel::insert_into(proposal_changes::table)
-            .values((
-                proposal_changes::proposal_id.eq(proposal_id),
-                proposal_changes::parent_change_id.eq(parent_id),
-                proposal_changes::user_id.eq(user_id),
-                proposal_changes::change_type.eq("edit"),
-                proposal_changes::content_snapshot.eq(&content),
-            ))
-            .execute(conn)?;
-
-        Ok(())
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
-    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query error: {e}")))
-}
-
 #[server]
 pub async fn create_proposal(repo_id: i32, title: String) -> Result<i32, ServerFnError> {
     use diesel::prelude::*;
@@ -278,12 +228,6 @@ pub fn ProposalPage() -> impl IntoView {
         async move { finalise_proposal(pid).await }
     });
 
-    let save_blocks_action = Action::new(move |blocks: &Vec<SpecBlock>| {
-        let pid = proposal_id();
-        let b = blocks.clone();
-        async move { save_proposal_blocks(pid, b).await }
-    });
-
     view! {
         <Suspense fallback=move || view! { <p>"Loading proposal…"</p> }>
             {move || {
@@ -389,20 +333,7 @@ pub fn ProposalPage() -> impl IntoView {
                                     </div>
                                 </div>
 
-                                // ── Save error feedback ───────────────────────
-                                {move || {
-                                    save_blocks_action
-                                        .value()
-                                        .get()
-                                        .and_then(|r: Result<(), _>| r.err())
-                                        .map(|e| {
-                                            view! {
-                                                <div class="notification is-danger is-light mb-4">
-                                                    {format!("Save failed: {e}")}
-                                                </div>
-                                            }
-                                        })
-                                }}
+
 
                                 // ── Finalise error feedback ───────────────────
                                 {move || {
@@ -438,11 +369,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                     view! {
                                                         <SpecBlockEditor
                                                             blocks=blocks
-                                                            on_save=Callback::new(move |updated: Vec<
-                                                                SpecBlock,
-                                                            >| {
-                                                                save_blocks_action.dispatch(updated);
-                                                            })
+                                                            proposal_id=p.id
                                                         />
                                                     }
                                                     .into_any()
