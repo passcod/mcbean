@@ -159,9 +159,21 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
                         });
                     }
                     DocElement::Req(r) => {
+                        let text = r
+                            .raw
+                            .lines()
+                            .map(|line| {
+                                line.strip_prefix("> ")
+                                    .or_else(|| line.strip_prefix('>'))
+                                    .unwrap_or(line)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                            .trim()
+                            .to_string();
                         search_entries.push(SearchEntry {
                             spec_name: spec_name.clone(),
-                            text: r.raw.clone(),
+                            text,
                             anchor: r.anchor_id.clone(),
                         });
                     }
