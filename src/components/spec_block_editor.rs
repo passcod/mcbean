@@ -320,7 +320,7 @@ pub async fn apply_block_ops(proposal_id: i32, ops: Vec<BlockOp>) -> Result<(), 
                 proposal_changes::proposal_id.eq(proposal_id),
                 proposal_changes::parent_change_id.eq(parent_id),
                 proposal_changes::user_id.eq(user_id),
-                proposal_changes::change_type.eq("user_edit"),
+                proposal_changes::change_type.eq(crate::db::models::ChangeType::UserEdit),
                 proposal_changes::content_snapshot.eq(&new_content),
             ))
             .execute(conn)?;

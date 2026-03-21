@@ -1,4 +1,9 @@
+use diesel::backend::Backend;
+use diesel::deserialize::{self, FromSql, FromSqlRow};
+use diesel::expression::AsExpression;
 use diesel::prelude::*;
+use diesel::serialize::{self, Output, ToSql};
+use diesel::sql_types::Varchar;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +136,42 @@ pub struct NewProposal {
     pub created_by: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, AsExpression, FromSqlRow)]
+#[diesel(sql_type = Varchar)]
+pub enum ChangeType {
+    UserEdit,
+    LlmEdit,
+    Undo,
+}
+
+impl<DB: Backend> ToSql<Varchar, DB> for ChangeType
+where
+    str: ToSql<Varchar, DB>,
+{
+    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, DB>) -> serialize::Result {
+        let s = match self {
+            ChangeType::UserEdit => "user_edit",
+            ChangeType::LlmEdit => "llm_edit",
+            ChangeType::Undo => "undo",
+        };
+        s.to_sql(out)
+    }
+}
+
+impl<DB: Backend> FromSql<Varchar, DB> for ChangeType
+where
+    String: FromSql<Varchar, DB>,
+{
+    fn from_sql(bytes: DB::RawValue<'_>) -> deserialize::Result<Self> {
+        match String::from_sql(bytes)?.as_str() {
+            "user_edit" => Ok(ChangeType::UserEdit),
+            "llm_edit" => Ok(ChangeType::LlmEdit),
+            "undo" => Ok(ChangeType::Undo),
+            other => Err(format!("unknown change_type: {other}").into()),
+        }
+    }
+}
+
 #[derive(Debug, Queryable, Selectable, Serialize)]
 #[diesel(table_name = proposal_changes)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -140,7 +181,7 @@ pub struct ProposalChange {
     // r[impl edit.history]
     pub parent_change_id: Option<i32>,
     pub user_id: i32,
-    pub change_type: String,
+    pub change_type: ChangeType,
     pub llm_prompt: Option<String>,
     // r[impl edit.history]
     pub content_snapshot: String,
@@ -154,7 +195,7 @@ pub struct NewProposalChange {
     pub proposal_id: i32,
     pub parent_change_id: Option<i32>,
     pub user_id: i32,
-    pub change_type: String,
+    pub change_type: ChangeType,
     pub llm_prompt: Option<String>,
     pub content_snapshot: String,
 }
