@@ -476,8 +476,19 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                                     class="grow-wrap"
                                     style:font-size=ta_font_size
                                     style:font-weight=ta_font_weight
-                                    attr:data-replicated-value=move || edit_draft.get()
                                 >
+                                    // Mirror div: sits in the same grid cell as the textarea
+                                    // and drives the row height through its text content.
+                                    // Wired directly to edit_draft — no attr()/::after needed,
+                                    // so this works in Firefox and every other browser.
+                                    // Trailing space prevents the last line collapsing when
+                                    // the content ends with a newline.
+                                    <div
+                                        class="grow-wrap-mirror"
+                                        aria-hidden="true"
+                                    >
+                                        {move || format!("{} ", edit_draft.get())}
+                                    </div>
                                     <textarea
                                         class="spec-block-textarea"
                                         autofocus=true

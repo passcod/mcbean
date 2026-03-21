@@ -167,66 +167,59 @@ html {
     font-size: 0.9rem;
 }
 
-/* grow-wrap: shadow-twin auto-sizing technique that works in all browsers.
-   The ::after pseudo-element mirrors the textarea content via
-   data-replicated-value and sits in the same grid cell, invisibly driving
-   the container height. Both the textarea and ::after inherit font metrics
-   from the wrapper so they size identically. */
+/* grow-wrap: shadow-twin auto-sizing that works in every browser.
+   .grow-wrap-mirror is a real DOM sibling in the same grid cell whose text
+   content is kept in sync with the textarea by Leptos's reactive system.
+   Its height drives the grid row; the textarea is stretched to match.
+   No ::after / attr() / field-sizing needed — plain text nodes work everywhere. */
 .grow-wrap {
     display: grid;
     width: 100%;
 }
 
-.grow-wrap::after {
-    content: attr(data-replicated-value) " ";
+/* Mirror div and textarea share the same grid cell. */
+.grow-wrap-mirror,
+.spec-block-textarea {
     grid-area: 1 / 1;
-    visibility: hidden;
-    white-space: pre-wrap;
-    word-break: break-word;
-    /* Must match textarea metrics exactly */
+    /* Identical box metrics so they size the same. */
     padding: 0.2rem 0 0.4rem;
-    border-bottom: 2px solid transparent;
     font-family: inherit;
     font-size: inherit;
     font-weight: inherit;
     line-height: inherit;
     min-height: 2em;
     max-height: 32em;
+}
+
+.grow-wrap-mirror {
+    /* Invisible but still participates in layout. */
+    visibility: hidden;
+    pointer-events: none;
+    user-select: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* Transparent border matches the textarea's bottom border so box heights
+       are identical regardless of box-sizing. */
+    border-bottom: 2px solid transparent;
     overflow: hidden;
 }
 
 .spec-block-textarea {
-    grid-area: 1 / 1;
     width: 100%;
-    padding: 0.2rem 0 0.4rem;
     margin: 0;
     border: none;
     border-bottom: 2px solid #93c5fd;
     border-radius: 0;
     outline: none;
     background: transparent;
-    font-family: inherit;
-    font-size: inherit;
-    font-weight: inherit;
-    line-height: inherit;
     color: inherit;
     resize: none;
-    overflow: hidden;
-    min-height: 2em;
-    max-height: 32em;
+    /* Scroll rather than clip once content hits max-height. */
+    overflow-y: auto;
 }
 
 .spec-block-textarea:focus {
     border-bottom-color: #3b82f6;
-}
-
-/* Progressive enhancement: field-sizing:content for browsers that support it.
-   The grow-wrap grid technique remains active but becomes redundant — no harm. */
-@supports (field-sizing: content) {
-    .spec-block-textarea {
-        field-sizing: content;
-        overflow-y: auto;
-    }
 }
 
 /* Footer save button */
