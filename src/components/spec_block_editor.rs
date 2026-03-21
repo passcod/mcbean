@@ -241,6 +241,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
             editing_key.set(None);
         }
         blocks.update(|list| list.retain(|b| b.key != key));
+        on_save.run(blocks.get_untracked());
     };
 
     // r[impl edit.reorder]
@@ -270,6 +271,7 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
         });
         drag_key.set(None);
         drag_over_bar.set(None);
+        on_save.run(blocks.get_untracked());
     };
 
     // Inserts a new block at the position given by after_key (same convention as drop_key).
@@ -550,15 +552,6 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                 }
             />
 
-            // ── Footer ────────────────────────────────────────────────────────
-            <div class="spec-editor-footer">
-                <button
-                    class="button is-primary"
-                    on:click=move |_| on_save.run(blocks.get_untracked())
-                >
-                    "Save changes"
-                </button>
-            </div>
         </div>
     }
 }

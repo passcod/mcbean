@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{SpecBlock, SpecBlockEditor};
+use crate::components::{FinaliseFab, SpecBlock, SpecBlockEditor};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProposalDetail {
@@ -242,6 +242,14 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
+// r[impl proposal.submit]
+// r[impl ids.finalise-phase]
+#[server]
+pub async fn finalise_proposal(_proposal_id: i32) -> Result<(), ServerFnError> {
+    // TODO: run LLM finalisation pass, present ID review to user, create PR.
+    Err(ServerFnError::new("Finalisation not yet implemented"))
+}
+
 #[component]
 pub fn ProposalPage() -> impl IntoView {
     let params = use_params_map();
@@ -263,6 +271,11 @@ pub fn ProposalPage() -> impl IntoView {
         let pid = proposal_id();
         let new_title = title_draft.get();
         async move { update_proposal_title(pid, new_title).await }
+    });
+
+    let finalise_action = Action::new(move |_: &()| {
+        let pid = proposal_id();
+        async move { finalise_proposal(pid).await }
     });
 
     let save_blocks_action = Action::new(move |blocks: &Vec<SpecBlock>| {
@@ -391,6 +404,21 @@ pub fn ProposalPage() -> impl IntoView {
                                         })
                                 }}
 
+                                // ── Finalise error feedback ───────────────────
+                                {move || {
+                                    finalise_action
+                                        .value()
+                                        .get()
+                                        .and_then(|r: Result<(), _>| r.err())
+                                        .map(|e| {
+                                            view! {
+                                                <div class="notification is-danger is-light mb-4">
+                                                    {format!("Finalise failed: {e}")}
+                                                </div>
+                                            }
+                                        })
+                                }}
+
                                 // ── Spec content ──────────────────────────────
                                 // r[impl edit.availability]
                                 // r[impl users.collaboration]
@@ -457,6 +485,16 @@ pub fn ProposalPage() -> impl IntoView {
                                             })
                                     }}
                                 </Suspense>
+
+                                // r[impl proposal.submit]
+                                <Show when=move || is_drafting>
+                                    <FinaliseFab
+                                        on_finalise=Callback::new(move |_| {
+                                            finalise_action.dispatch(());
+                                        })
+                                        pending=finalise_action.pending().get()
+                                    />
+                                </Show>
                             }
                             .into_any()
                         }

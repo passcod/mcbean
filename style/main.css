@@ -222,13 +222,6 @@ html {
     border-bottom-color: #3b82f6;
 }
 
-/* Footer save button */
-.spec-editor-footer {
-    padding: 1rem 0.5rem 0.5rem;
-    border-top: 1px solid #e5e7eb;
-    margin-top: 0.75rem;
-}
-
 /* Read-only view for non-drafting proposals */
 .spec-readonly {
     padding: 0.5rem 0;
