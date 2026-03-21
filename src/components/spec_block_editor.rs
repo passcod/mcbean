@@ -193,13 +193,28 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
         editing_key.set(Some(key));
     };
 
-    // Writes the textarea draft back into the block list and closes the editor.
-    // Called on textarea blur — no explicit "Done" button needed.
+    // Writes the textarea draft back into the block list, closes the editor,
+    // and triggers an immediate server save. Called on textarea blur.
+    // Skips the save entirely when the text hasn't changed, so we don't
+    // produce spurious proposal_change history entries.
     let commit_edit = move || {
         let Some(key) = editing_key.get_untracked() else {
             return;
         };
+        editing_key.set(None);
+
         let text = edit_draft.get_untracked();
+
+        let changed = blocks.with_untracked(|list| {
+            list.iter()
+                .find(|b| b.key == key)
+                .is_some_and(|b| b.edit_text() != text)
+        });
+
+        if !changed {
+            return;
+        }
+
         blocks.update(|list| {
             if let Some(b) = list.iter_mut().find(|b| b.key == key) {
                 match &mut b.kind {
@@ -208,11 +223,13 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
                     SpecBlockKind::Paragraph { text: t } => *t = text.clone(),
                 }
                 // Clear stale rendered HTML; display falls back to plain text
-                // until the user saves and the server re-renders.
+                // until the server re-renders on next load.
                 b.html.clear();
             }
         });
-        editing_key.set(None);
+
+        // r[impl edit.history]
+        on_save.run(blocks.get_untracked());
     };
 
     // Closes the editor without writing the draft, reverting the visible text.

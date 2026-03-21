@@ -271,13 +271,6 @@ pub fn ProposalPage() -> impl IntoView {
         async move { save_proposal_blocks(pid, b).await }
     });
 
-    // Re-fetch blocks after a successful save so rendered HTML is refreshed.
-    Effect::new(move |_| {
-        if let Some(Ok(())) = save_blocks_action.value().get() {
-            blocks_resource.refetch();
-        }
-    });
-
     view! {
         <Suspense fallback=move || view! { <p>"Loading proposal…"</p> }>
             {move || {
