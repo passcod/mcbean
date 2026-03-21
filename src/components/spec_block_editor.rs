@@ -244,6 +244,7 @@ pub async fn sync_proposal(
         doc.import(&update)
             .map_err(|e| ServerFnError::new(format!("import: {e}")))?;
 
+        // r[impl edit.history]
         conn.interact(move |conn| {
             use crate::db::schema::proposal_loro_updates;
             diesel::insert_into(proposal_loro_updates::table)

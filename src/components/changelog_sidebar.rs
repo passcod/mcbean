@@ -192,6 +192,7 @@ pub fn compute_changelog(initial: &[SpecBlock], current: &[SpecBlock]) -> Vec<Ch
 // r[impl proposal.diff.semantic]
 // r[impl proposal.diff.expandable]
 // r[impl proposal.diff.version-bumps]
+// r[impl edit.history]
 #[component]
 pub fn ChangelogSidebar(
     initial_blocks: Vec<SpecBlock>,

@@ -133,6 +133,7 @@ pub struct NewProposal {
 pub struct ProposalLoroUpdate {
     pub id: i32,
     pub proposal_id: i32,
+    // r[impl edit.history]
     pub user_id: i32,
     // Loro PeerID (u64) bitcast to i64 for BIGINT storage.
     pub peer_id: i64,

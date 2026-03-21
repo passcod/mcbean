@@ -94,7 +94,8 @@ Reordering rules or sections MUST NOT alter any finalised rule IDs.
 Rule IDs are not positional.
 
 r[ids.version-bump]
-When rule text is modified, McBean MUST automatically increment the version suffix of that rule's ID in the generated Markdown, conforming to Tracey's versioning convention.
+During finalisation, McBean MUST increment the version suffix of every rule whose text was modified compared to the base snapshot, conforming to Tracey's versioning convention.
+Each such rule receives exactly one version bump per proposal, regardless of how many intermediate edits were made to it.
 
 ## WYSIWYG Editor
 
