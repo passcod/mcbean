@@ -74,7 +74,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
             }
 
             DocElement::Req(r) => {
-                let prose = strip_blockquote_prefixes(&r.raw).trim().to_string();
+                let prose = join_hard_wraps(strip_blockquote_prefixes(&r.raw).trim());
                 blocks.push(SpecBlock {
                     key,
                     kind: SpecBlockKind::Rule {
@@ -89,7 +89,7 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                 let start = p.offset.min(content.len());
                 let rest = &content[start..];
                 let end = rest.find("\n\n").unwrap_or(rest.len());
-                let text = rest[..end].trim().to_string();
+                let text = join_hard_wraps(rest[..end].trim());
                 if text.is_empty() || text.starts_with("r[") {
                     continue;
                 }
@@ -124,14 +124,55 @@ pub fn serialize_blocks(blocks: &[SpecBlock]) -> String {
                 out.push_str("r[");
                 out.push_str(id);
                 out.push_str("]\n");
-                out.push_str(text.trim());
+                out.push_str(&reflow_sentences(text));
                 out.push_str("\n\n");
             }
             SpecBlockKind::Paragraph { text } => {
-                out.push_str(text.trim());
+                out.push_str(&reflow_sentences(text));
                 out.push_str("\n\n");
             }
         }
+    }
+    out
+}
+
+/// Collapse single newlines (hard wraps) into spaces so the textarea shows
+/// soft-wrapped prose. Double newlines are not expected inside a single block
+/// but are left intact as a safety measure.
+fn join_hard_wraps(text: &str) -> String {
+    text.lines().collect::<Vec<_>>().join(" ")
+}
+
+/// Reflow prose so each sentence starts on its own line. First joins any
+/// remaining hard wraps, then inserts a newline after every `.`, `?`, or `!`
+/// that is followed by a space and then an uppercase letter (classic sentence
+/// boundary), or that ends the string.
+#[cfg(feature = "ssr")]
+fn reflow_sentences(text: &str) -> String {
+    let flat = join_hard_wraps(text.trim());
+    let chars: Vec<char> = flat.chars().collect();
+    let len = chars.len();
+    let mut out = String::with_capacity(flat.len());
+    let mut i = 0;
+    while i < len {
+        let c = chars[i];
+        out.push(c);
+        if matches!(c, '.' | '?' | '!') {
+            // Scan past any trailing spaces after the punctuation.
+            let mut j = i + 1;
+            while j < len && chars[j] == ' ' {
+                j += 1;
+            }
+            // Sentence boundary: end of string, or the next word starts uppercase.
+            if j == len || chars[j].is_uppercase() {
+                if j < len {
+                    out.push('\n');
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
     }
     out
 }
