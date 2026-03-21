@@ -36,3 +36,14 @@ html {
 .req-link span {
     pointer-events: auto;
 }
+
+/* Sidebar */
+.sidebar-nav-link:hover {
+    background: #f3f4f6;
+    color: #111827;
+}
+
+.sidebar-dragging {
+    user-select: none;
+    cursor: col-resize !important;
+}

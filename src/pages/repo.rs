@@ -2,6 +2,8 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
+use crate::components::{HeadingEntry, SpecOutline, SpecSidebar};
+
 #[cfg(feature = "ssr")]
 use tracing::info;
 
@@ -24,6 +26,7 @@ pub struct RenderedSpec {
     pub id: i32,
     pub name: String,
     pub files: Vec<RenderedFile>,
+    pub headings: Vec<HeadingEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +67,46 @@ pub async fn get_repository(repo_id: i32) -> Result<RepoInfo, ServerFnError> {
         tracing::error!(repo_id, error = %e, "get_repository query failed");
         ServerFnError::new(format!("query error: {e}"))
     })
+}
+
+#[cfg(feature = "ssr")]
+fn extract_headings(content: &str) -> Vec<HeadingEntry> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let n = line.chars().take_while(|&c| c == '#').count();
+            if n == 0 || n > 6 {
+                return None;
+            }
+            let rest = &line[n..];
+            if !rest.starts_with(' ') {
+                return None;
+            }
+            let text = rest.trim().to_string();
+            if text.is_empty() {
+                return None;
+            }
+            let anchor = text
+                .to_lowercase()
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() {
+                        c
+                    } else if c == ' ' {
+                        '-'
+                    } else {
+                        '\0'
+                    }
+                })
+                .filter(|&c| c != '\0')
+                .collect();
+            Some(HeadingEntry {
+                level: n as u8,
+                text,
+                anchor,
+            })
+        })
+        .collect()
 }
 
 #[server]
@@ -119,6 +162,11 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
 
     let mut result = Vec::with_capacity(grouped.len());
     for (spec_id, spec_name, files) in grouped {
+        let headings: Vec<HeadingEntry> = files
+            .iter()
+            .flat_map(|(_, content)| extract_headings(content))
+            .collect();
+
         let mut rendered_files = Vec::with_capacity(files.len());
         for (path, content) in files {
             let opts = RenderOptions::new().with_source_path(&path);
@@ -136,6 +184,7 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
             id: spec_id,
             name: spec_name,
             files: rendered_files,
+            headings,
         });
     }
 
@@ -296,21 +345,32 @@ pub fn RepoPage() -> impl IntoView {
                                 </p>
                             }.into_any()
                         } else {
+                            let outline: Vec<SpecOutline> = specs
+                                .iter()
+                                .map(|s| SpecOutline {
+                                    name: s.name.clone(),
+                                    headings: s.headings.clone(),
+                                })
+                                .collect();
+
                             view! {
                                 // r[impl repo.multi-spec]
-                                <div>
-                                    {specs.into_iter().map(|spec| {
-                                        view! {
-                                            <section class="mb-6">
-                                                {spec.files.into_iter().map(|file| {
-                                                    view! {
-                                                        <div class="content spec-content"
-                                                            inner_html=file.html />
-                                                    }
-                                                }).collect::<Vec<_>>()}
-                                            </section>
-                                        }
-                                    }).collect::<Vec<_>>()}
+                                <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+                                    <SpecSidebar specs=outline />
+                                    <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                                        {specs.into_iter().map(|spec| {
+                                            view! {
+                                                <section class="mb-6">
+                                                    {spec.files.into_iter().map(|file| {
+                                                        view! {
+                                                            <div class="content spec-content"
+                                                                inner_html=file.html />
+                                                        }
+                                                    }).collect::<Vec<_>>()}
+                                                </section>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
                                 </div>
                             }.into_any()
                         }
