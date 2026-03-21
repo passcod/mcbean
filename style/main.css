@@ -1,5 +1,31 @@
 @import url("https://cdn.jsdelivr.net/npm/bulma@1.0.4/css/bulma.min.css");
 
 html {
-  overflow-y: auto;
+    overflow-y: auto;
+}
+
+/* Requirement annotations — visually insignificant per r[view.render] */
+.req {
+    position: relative;
+}
+
+.req-link {
+    display: block;
+    font-size: 0.7rem;
+    font-family: monospace;
+    color: #b5b5b5;
+    text-decoration: none;
+    margin-bottom: -0.25em;
+    opacity: 0.7;
+    transition: opacity 0.15s ease;
+}
+
+.req-link:hover {
+    opacity: 1;
+    color: #7a7a7a;
+    text-decoration: none;
+}
+
+.req-link span {
+    pointer-events: auto;
 }
