@@ -72,10 +72,12 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
     });
 
     // r[impl proposal.multiple.warning]
-    let existing = Resource::new(
-        move || check_version.get(),
-        move |_| get_user_open_proposal(repo_id),
-    );
+    // LocalResource skips SSR entirely — the check is user-specific and only
+    // meaningful once the client is interactive, so there's nothing to hydrate.
+    let existing = LocalResource::new(move || {
+        let _ = check_version.get(); // track for reactivity
+        get_user_open_proposal(repo_id)
+    });
 
     // Restore draft from localStorage on client mount (Effects don't run on SSR).
     Effect::new(move |_| {
