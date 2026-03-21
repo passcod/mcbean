@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -338,6 +339,7 @@ pub fn HomePage() -> impl IntoView {
     let is_submitting = move || add_action.pending().get();
 
     view! {
+        <Title text="Repositories"/>
         <section class="hero is-primary is-medium">
             <div class="hero-body">
                 <p class="title">"McBean"</p>

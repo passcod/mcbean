@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 
 use crate::components::ProposalFab;
@@ -286,6 +287,7 @@ pub fn RepoPage() -> impl IntoView {
                         let url_href = r.github_url.clone();
                         let url_text = r.github_url;
                         view! {
+                            <Title text=label.clone()/>
                             <div class="level mb-2">
                                 <div class="level-left">
                                     <div class="level-item">

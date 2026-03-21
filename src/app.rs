@@ -10,6 +10,14 @@ pub fn App() -> impl IntoView {
     provide_meta_context();
 
     view! {
+        <Title formatter=|text: String| {
+            if text.is_empty() {
+                "McBean".into()
+            } else {
+                format!("{text} — McBean")
+            }
+        }/>
+        <Link rel="icon" href="/logo.png" type_="image/png"/>
         <Nav />
         <Router>
             <main class="section">

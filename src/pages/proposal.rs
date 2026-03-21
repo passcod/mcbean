@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
@@ -244,6 +245,7 @@ pub fn ProposalPage() -> impl IntoView {
                             let initial_title = display_title.clone();
 
                             view! {
+                                <Title text=display_title.clone()/>
                                 // ── Title row ────────────────────────────────
                                 <div class="level mb-4">
                                     <div class="level-left">
