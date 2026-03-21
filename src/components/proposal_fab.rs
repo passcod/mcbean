@@ -69,10 +69,10 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
             </div>
             <div style="padding: 0.875rem 1rem 1rem;">
                 // r[impl proposal.create.dismiss]
-                <input
-                    class="input"
-                    type="text"
+                <textarea
+                    class="textarea"
                     placeholder="Title (optional)"
+                    rows="4"
                     prop:value=move || title.get()
                     on:input=move |ev| title.set(event_target_value(&ev))
                 />
