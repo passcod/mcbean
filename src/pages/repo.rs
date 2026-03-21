@@ -40,6 +40,13 @@ pub struct ProposalInfo {
     pub status: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserOpenProposal {
+    pub id: i32,
+    pub title: Option<String>,
+    pub status: String,
+}
+
 #[server]
 pub async fn get_repository(repo_id: i32) -> Result<RepoInfo, ServerFnError> {
     use diesel::prelude::*;
@@ -217,6 +224,65 @@ pub async fn list_rendered_specs(repo_id: i32) -> Result<Vec<RenderedSpec>, Serv
         spec_count = result.len(),
         "list_rendered_specs returned"
     );
+    Ok(result)
+}
+
+/// Returns the latest open proposal (drafting or in_progress) for this repo
+/// that the current user created or has contributed a change to.
+// r[impl proposal.multiple.warning]
+#[server]
+pub async fn get_user_open_proposal(
+    repo_id: i32,
+) -> Result<Option<UserOpenProposal>, ServerFnError> {
+    use diesel::prelude::*;
+
+    let user_id = crate::auth::get_or_create_user_id().await?;
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let result = conn
+        .interact(move |conn| {
+            use crate::db::schema::{proposal_changes, proposals};
+
+            // All open proposals for this repo where the user is the creator
+            // or has authored at least one change.
+            let row = proposals::table
+                .left_join(
+                    proposal_changes::table.on(proposal_changes::proposal_id
+                        .eq(proposals::id)
+                        .and(proposal_changes::user_id.eq(user_id))),
+                )
+                .filter(proposals::repository_id.eq(repo_id))
+                .filter(
+                    proposals::status
+                        .eq("drafting")
+                        .or(proposals::status.eq("in_progress")),
+                )
+                .filter(
+                    proposals::created_by
+                        .eq(user_id)
+                        .or(proposal_changes::user_id.eq(user_id)),
+                )
+                .order(proposals::id.desc())
+                .select((proposals::id, proposals::title, proposals::status))
+                .distinct()
+                .first::<(i32, Option<String>, String)>(conn)
+                .optional()?;
+
+            Ok::<_, diesel::result::Error>(row.map(|(id, title, status)| UserOpenProposal {
+                id,
+                title,
+                status,
+            }))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
     Ok(result)
 }
 

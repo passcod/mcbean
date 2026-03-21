@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_navigate;
 
 use crate::pages::proposal::create_proposal;
+use crate::pages::repo::get_user_open_proposal;
 
 #[cfg(feature = "hydrate")]
 fn draft_key(repo_id: i32) -> String {
@@ -60,6 +61,22 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
         async move { create_proposal(repo_id, t).await }
     });
 
+    // Incremented when the panel opens or when the create button is clicked,
+    // triggering a fresh check for existing proposals the user is involved in.
+    let check_version = RwSignal::new(0u32);
+
+    Effect::new(move |_| {
+        if panel_open.get() {
+            check_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+
+    // r[impl proposal.multiple.warning]
+    let existing = Resource::new(
+        move || check_version.get(),
+        move |_| get_user_open_proposal(repo_id),
+    );
+
     // Restore draft from localStorage on client mount (Effects don't run on SSR).
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
@@ -111,6 +128,33 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                 </button>
             </div>
             <div style="padding: 0.875rem 1rem 1rem;">
+                // r[impl proposal.multiple.warning]
+                {move || {
+                    existing.get().and_then(|r| r.ok().flatten()).map(|p| {
+                        let label = p.title
+                            .unwrap_or_else(|| format!("Proposal #{}", p.id));
+                        let href = format!("/repo/{}/proposal/{}", repo_id, p.id);
+                        view! {
+                            <div style="background: #fffbeb; border: 1px solid #fcd34d; \
+                                        border-radius: 6px; padding: 0.6rem 0.75rem; \
+                                        margin-bottom: 0.625rem; font-size: 0.8rem; \
+                                        color: #92400e;">
+                                <p style="margin: 0 0 0.35rem;">
+                                    <strong>"You already have an open proposal: "</strong>
+                                    {label}
+                                </p>
+                                <a
+                                    href=href
+                                    on:click=move |_| panel_open.set(false)
+                                    style="color: #b45309; font-weight: 600; \
+                                           text-decoration: underline;"
+                                >
+                                    "Go to existing proposal →"
+                                </a>
+                            </div>
+                        }
+                    })
+                }}
                 // r[impl proposal.create.dismiss]
                 <textarea
                     class="textarea"
@@ -137,7 +181,10 @@ pub fn ProposalFab(repo_id: i32) -> impl IntoView {
                     class="button is-primary is-fullwidth"
                     style="margin-top: 0.625rem;"
                     disabled=move || create_action.pending().get()
-                    on:click=move |_| { create_action.dispatch(()); }
+                    on:click=move |_| {
+                        check_version.update(|v| *v = v.wrapping_add(1));
+                        create_action.dispatch(());
+                    }
                 >
                     {move || {
                         if create_action.pending().get() { "Creating…" } else { "Create Proposal" }
