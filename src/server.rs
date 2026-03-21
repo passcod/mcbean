@@ -5,6 +5,8 @@ use leptos::config::get_configuration;
 use leptos::prelude::*;
 use leptos_axum::{LeptosRoutes, generate_route_list};
 use leptos_meta::*;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::app::App;
 use crate::db::{DbPool, create_pool};
@@ -43,6 +45,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
 #[tokio::main]
 pub async fn run() {
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(fmt::layer())
+        .init();
+
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = create_pool(&database_url);
 
@@ -72,6 +79,7 @@ pub async fn run() {
             },
         )
         .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
