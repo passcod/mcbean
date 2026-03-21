@@ -68,15 +68,16 @@ pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, Ser
 
     let (base_bytes, update_rows) = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposal_loro_updates, proposals, spec_snapshots};
+            use crate::db::schema::{proposal_loro_updates, spec_snapshots};
 
-            let base_snapshot_id: Option<i32> = proposals::table
-                .find(proposal_id)
-                .select(proposals::base_snapshot_id)
-                .first(conn)?;
+            use crate::components::spec_block_editor::resolve_base_snapshot_id;
 
-            let Some(sid) = base_snapshot_id else {
-                return Ok::<_, diesel::result::Error>((Vec::new(), Vec::new()));
+            let sid = match resolve_base_snapshot_id(proposal_id, conn) {
+                Ok(sid) => sid,
+                Err(diesel::result::Error::NotFound) => {
+                    return Ok::<_, diesel::result::Error>((Vec::new(), Vec::new()));
+                }
+                Err(e) => return Err(e),
             };
 
             let base_bytes: Vec<u8> = spec_snapshots::table
@@ -122,15 +123,16 @@ pub async fn get_base_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, ServerF
 
     let base_bytes: Vec<u8> = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposals, spec_snapshots};
+            use crate::db::schema::spec_snapshots;
 
-            let base_snapshot_id: Option<i32> = proposals::table
-                .find(proposal_id)
-                .select(proposals::base_snapshot_id)
-                .first(conn)?;
+            use crate::components::spec_block_editor::resolve_base_snapshot_id;
 
-            let Some(sid) = base_snapshot_id else {
-                return Ok::<_, diesel::result::Error>(Vec::new());
+            let sid = match resolve_base_snapshot_id(proposal_id, conn) {
+                Ok(sid) => sid,
+                Err(diesel::result::Error::NotFound) => {
+                    return Ok::<_, diesel::result::Error>(Vec::new());
+                }
+                Err(e) => return Err(e),
             };
 
             spec_snapshots::table

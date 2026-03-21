@@ -96,6 +96,43 @@ pub fn blocks_to_sidebar_data(
 
 // ── Server functions ──────────────────────────────────────────────────────────
 
+/// Ensure `proposals.base_snapshot_id` is set for `proposal_id`, lazily
+/// linking it to the latest `spec_snapshots` row for the repository if it
+/// is still NULL.  Returns the resolved snapshot id, or
+/// `diesel::result::Error::NotFound` if no snapshot exists yet.
+#[cfg(feature = "ssr")]
+pub fn resolve_base_snapshot_id(
+    proposal_id: i32,
+    conn: &mut diesel::PgConnection,
+) -> Result<i32, diesel::result::Error> {
+    use diesel::prelude::*;
+
+    use crate::db::schema::{proposals, spec_snapshots};
+
+    let (repo_id, mut base_snapshot_id): (i32, Option<i32>) = proposals::table
+        .find(proposal_id)
+        .select((proposals::repository_id, proposals::base_snapshot_id))
+        .first(conn)?;
+
+    if base_snapshot_id.is_none() {
+        let latest: Option<i32> = spec_snapshots::table
+            .filter(spec_snapshots::repository_id.eq(repo_id))
+            .order(spec_snapshots::id.desc())
+            .select(spec_snapshots::id)
+            .first(conn)
+            .optional()?;
+
+        if let Some(sid) = latest {
+            diesel::update(proposals::table.find(proposal_id))
+                .set(proposals::base_snapshot_id.eq(sid))
+                .execute(conn)?;
+            base_snapshot_id = Some(sid);
+        }
+    }
+
+    base_snapshot_id.ok_or(diesel::result::Error::NotFound)
+}
+
 /// Return a full Loro snapshot for the proposal, lazily linking it to the
 /// latest spec snapshot for the repository if not yet set.
 #[server]
@@ -114,33 +151,9 @@ pub async fn get_proposal_doc(proposal_id: i32) -> Result<Vec<u8>, ServerFnError
 
     let (base_bytes, update_rows) = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposal_loro_updates, proposals, spec_snapshots};
+            use crate::db::schema::{proposal_loro_updates, spec_snapshots};
 
-            let (repo_id, mut base_snapshot_id): (i32, Option<i32>) = proposals::table
-                .find(proposal_id)
-                .select((proposals::repository_id, proposals::base_snapshot_id))
-                .first(conn)?;
-
-            // Lazily link to the latest snapshot for this repo.
-            if base_snapshot_id.is_none() {
-                let latest: Option<i32> = spec_snapshots::table
-                    .filter(spec_snapshots::repository_id.eq(repo_id))
-                    .order(spec_snapshots::id.desc())
-                    .select(spec_snapshots::id)
-                    .first(conn)
-                    .optional()?;
-
-                if let Some(sid) = latest {
-                    diesel::update(proposals::table.find(proposal_id))
-                        .set(proposals::base_snapshot_id.eq(sid))
-                        .execute(conn)?;
-                    base_snapshot_id = Some(sid);
-                }
-            }
-
-            let Some(sid) = base_snapshot_id else {
-                return Err(diesel::result::Error::NotFound);
-            };
+            let sid = resolve_base_snapshot_id(proposal_id, conn)?;
 
             let base_bytes: Vec<u8> = spec_snapshots::table
                 .find(sid)
@@ -197,16 +210,9 @@ pub async fn sync_proposal(
 
     let (base_bytes, update_rows) = conn
         .interact(move |conn| {
-            use crate::db::schema::{proposal_loro_updates, proposals, spec_snapshots};
+            use crate::db::schema::{proposal_loro_updates, spec_snapshots};
 
-            let base_snapshot_id: Option<i32> = proposals::table
-                .find(proposal_id)
-                .select(proposals::base_snapshot_id)
-                .first(conn)?;
-
-            let Some(sid) = base_snapshot_id else {
-                return Err(diesel::result::Error::NotFound);
-            };
+            let sid = resolve_base_snapshot_id(proposal_id, conn)?;
 
             let base_bytes: Vec<u8> = spec_snapshots::table
                 .find(sid)
