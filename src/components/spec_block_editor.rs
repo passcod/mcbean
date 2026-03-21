@@ -602,8 +602,8 @@ pub fn next_provisional_id() -> String {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 #[component]
-pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, proposal_id: i32) -> impl IntoView {
-    let blocks = RwSignal::new(blocks);
+pub fn SpecBlockEditor(blocks_signal: RwSignal<Vec<SpecBlock>>, proposal_id: i32) -> impl IntoView {
+    let blocks = blocks_signal;
 
     // Key of the block whose textarea is currently open.
     let editing_key: RwSignal<Option<String>> = RwSignal::new(None);

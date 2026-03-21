@@ -1,0 +1,539 @@
+use std::collections::{HashMap, HashSet};
+
+type WordSpans = Vec<(bool, String)>;
+
+use leptos::prelude::*;
+
+use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind};
+
+// ── Data model ────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChangeKind {
+    Added,
+    Deleted,
+    Modified,
+    Reordered,
+    VersionBump,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChangelogEntry {
+    pub key: String,
+    pub kind: ChangeKind,
+    pub label: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+}
+
+fn block_label(b: &SpecBlock) -> String {
+    match &b.kind {
+        SpecBlockKind::Rule { id, .. } => format!("r[{}]", id),
+        SpecBlockKind::Heading { level, text, .. } => {
+            let prefix = "#".repeat(*level as usize);
+            if text.is_empty() {
+                format!("{} (untitled heading)", prefix)
+            } else {
+                format!("{} {}", prefix, text)
+            }
+        }
+        SpecBlockKind::Paragraph { text } => {
+            let mut snippet: String = text.chars().take(60).collect();
+            if text.len() > 60 {
+                snippet.push('…');
+            }
+            snippet
+        }
+    }
+}
+
+// ── Diff helpers ──────────────────────────────────────────────────────────────
+
+/// Returns the matched index pairs (i_in_a, i_in_b) from the LCS of two
+/// string slices. O(m * n) in time and space.
+fn lcs_pairs(a: &[&str], b: &[&str]) -> Vec<(usize, usize)> {
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            dp[i][j] = if a[i] == b[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut pairs = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < m && j < n {
+        if a[i] == b[j] {
+            pairs.push((i, j));
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    pairs
+}
+
+/// Word-level diff between two prose strings.
+/// Returns `(old_spans, new_spans)` where each span is `(is_common, word)`.
+/// Words not in the common subsequence are highlighted as removed / added.
+pub fn word_diff(old: &str, new: &str) -> (WordSpans, WordSpans) {
+    let old_words: Vec<&str> = old.split_whitespace().collect();
+    let new_words: Vec<&str> = new.split_whitespace().collect();
+    let pairs = lcs_pairs(&old_words, &new_words);
+
+    let common_old: HashSet<usize> = pairs.iter().map(|(i, _)| *i).collect();
+    let common_new: HashSet<usize> = pairs.iter().map(|(_, j)| *j).collect();
+
+    let old_spans = old_words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (common_old.contains(&i), w.to_string()))
+        .collect();
+    let new_spans = new_words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (common_new.contains(&i), w.to_string()))
+        .collect();
+
+    (old_spans, new_spans)
+}
+
+// ── Changelog computation ─────────────────────────────────────────────────────
+
+// r[impl proposal.diff.semantic]
+pub fn compute_changelog(initial: &[SpecBlock], current: &[SpecBlock]) -> Vec<ChangelogEntry> {
+    let initial_by_key: HashMap<&str, (usize, &SpecBlock)> = initial
+        .iter()
+        .enumerate()
+        .map(|(i, b)| (b.key.as_str(), (i, b)))
+        .collect();
+    let current_key_set: HashSet<&str> = current.iter().map(|b| b.key.as_str()).collect();
+    let initial_key_set: HashSet<&str> = initial.iter().map(|b| b.key.as_str()).collect();
+
+    // Detect reordered keys: find blocks whose relative order changed among
+    // the keys common to both snapshots, using LCS on the two orderings.
+    let common_in_initial: Vec<&str> = initial
+        .iter()
+        .filter(|b| current_key_set.contains(b.key.as_str()))
+        .map(|b| b.key.as_str())
+        .collect();
+    let common_in_current: Vec<&str> = current
+        .iter()
+        .filter(|b| initial_key_set.contains(b.key.as_str()))
+        .map(|b| b.key.as_str())
+        .collect();
+    let stable_pairs = lcs_pairs(&common_in_initial, &common_in_current);
+    let stable_keys: HashSet<&str> = stable_pairs
+        .iter()
+        .map(|(i, _)| common_in_initial[*i])
+        .collect();
+
+    let mut entries: Vec<ChangelogEntry> = Vec::new();
+
+    // Deleted: present in initial, absent from current.
+    for b in initial {
+        if !current_key_set.contains(b.key.as_str()) {
+            entries.push(ChangelogEntry {
+                key: b.key.clone(),
+                kind: ChangeKind::Deleted,
+                label: block_label(b),
+                old_text: Some(b.edit_text().to_owned()),
+                new_text: None,
+            });
+        }
+    }
+
+    // Walk current to produce Added / Modified / Reordered in document order.
+    for b in current {
+        let key = b.key.as_str();
+        if let Some((_, init_block)) = initial_by_key.get(key) {
+            let init_text = init_block.edit_text();
+            let curr_text = b.edit_text();
+            if init_text != curr_text {
+                entries.push(ChangelogEntry {
+                    key: b.key.clone(),
+                    kind: ChangeKind::Modified,
+                    label: block_label(b),
+                    old_text: Some(init_text.to_owned()),
+                    new_text: Some(curr_text.to_owned()),
+                });
+            } else if !stable_keys.contains(key) {
+                entries.push(ChangelogEntry {
+                    key: b.key.clone(),
+                    kind: ChangeKind::Reordered,
+                    label: block_label(b),
+                    old_text: None,
+                    new_text: None,
+                });
+            }
+        } else {
+            entries.push(ChangelogEntry {
+                key: b.key.clone(),
+                kind: ChangeKind::Added,
+                label: block_label(b),
+                old_text: None,
+                new_text: Some(b.edit_text().to_owned()),
+            });
+        }
+    }
+
+    entries
+}
+
+// ── ChangelogSidebar component ────────────────────────────────────────────────
+
+// r[impl proposal.diff.semantic]
+// r[impl proposal.diff.expandable]
+// r[impl proposal.diff.version-bumps]
+#[component]
+pub fn ChangelogSidebar(
+    initial_blocks: Vec<SpecBlock>,
+    blocks: Signal<Vec<SpecBlock>>,
+) -> impl IntoView {
+    let initial_blocks = StoredValue::new(initial_blocks);
+
+    // r[impl proposal.diff.semantic]
+    let entries = Signal::derive(move || {
+        initial_blocks.with_value(|init| compute_changelog(init, &blocks.get()))
+    });
+
+    let collapsed = RwSignal::new(false);
+    let width = RwSignal::new(280.0f64);
+    let dragging = RwSignal::new(false);
+    let drag_start_x = RwSignal::new(0.0f64);
+    let drag_start_w = RwSignal::new(0.0f64);
+
+    let expanded: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
+    let toggle_expanded = Callback::new(move |key: String| {
+        expanded.update(|set| {
+            if !set.remove(&key) {
+                set.insert(key);
+            }
+        });
+    });
+
+    view! {
+        // Full-screen drag overlay.
+        <Show when=move || dragging.get()>
+            <div
+                style="position: fixed; inset: 0; z-index: 9999; \
+                       cursor: col-resize; user-select: none;"
+                on:mousemove=move |e| {
+                    let dx = drag_start_x.get_untracked() - e.client_x() as f64;
+                    let new_w = drag_start_w.get_untracked() + dx;
+                    width.set(new_w.clamp(180.0, 600.0));
+                }
+                on:mouseup=move |_| dragging.set(false)
+            />
+        </Show>
+
+        <div style="display: flex; flex-shrink: 0; position: sticky; top: 0; \
+                    height: 100vh; z-index: 10;">
+
+            // Resize handle / expand strip — sits to the LEFT of the panel.
+            <div
+                title=move || {
+                    if collapsed.get() { "Expand changelog" } else { "Drag to resize" }
+                }
+                style:cursor=move || if collapsed.get() { "pointer" } else { "col-resize" }
+                style:width=move || if collapsed.get() { "20px" } else { "5px" }
+                style:background=move || {
+                    if collapsed.get() {
+                        "#f3f4f6".to_string()
+                    } else if dragging.get() {
+                        "rgba(59,130,246,0.4)".to_string()
+                    } else {
+                        "transparent".to_string()
+                    }
+                }
+                style="flex-shrink: 0; border-left: 1px solid #e5e7eb; \
+                       display: flex; align-items: flex-start; justify-content: center; \
+                       padding-top: 6px; transition: background 0.1s, width 0.15s ease; \
+                       user-select: none;"
+                on:mousedown=move |e| {
+                    if collapsed.get() {
+                        collapsed.set(false);
+                    } else {
+                        e.prevent_default();
+                        drag_start_x.set(e.client_x() as f64);
+                        drag_start_w.set(width.get_untracked());
+                        dragging.set(true);
+                    }
+                }
+            >
+                <Show when=move || collapsed.get()>
+                    <span style="font-size: 0.9rem; color: #9ca3af; line-height: 1;">
+                        "‹"
+                    </span>
+                </Show>
+            </div>
+
+            // Panel body.
+            <aside
+                style:width=move || {
+                    if collapsed.get() { "0px".to_string() }
+                    else { format!("{}px", width.get()) }
+                }
+                style="overflow: hidden; display: flex; flex-direction: column; \
+                       background: #fafafa; border-left: 1px solid #e5e7eb; \
+                       transition: width 0.15s ease;"
+            >
+                // Header row.
+                <div style="display: flex; align-items: center; gap: 0.25rem; \
+                            padding: 0.4rem 0.5rem; border-bottom: 1px solid #e5e7eb; \
+                            flex-shrink: 0; min-width: 0;">
+                    <span style="flex: 1; font-size: 0.75rem; font-weight: 600; \
+                                 color: #111827; white-space: nowrap; overflow: hidden; \
+                                 text-overflow: ellipsis;">
+                        "Changes"
+                    </span>
+                    {move || {
+                        let n = entries.get().len();
+                        if n > 0 {
+                            view! {
+                                <span style="font-size: 0.65rem; background: #3b82f6; \
+                                             color: #fff; border-radius: 999px; \
+                                             padding: 0.05rem 0.45rem; flex-shrink: 0;">
+                                    {n}
+                                </span>
+                            }
+                            .into_any()
+                        } else {
+                            view! { <span /> }.into_any()
+                        }
+                    }}
+                    <button
+                        title="Collapse changelog"
+                        style="border: none; background: none; cursor: pointer; \
+                               padding: 0 4px; color: #9ca3af; font-size: 1rem; \
+                               line-height: 1; flex-shrink: 0;"
+                        on:click=move |_| collapsed.set(true)
+                    >
+                        "›"
+                    </button>
+                </div>
+
+                // Scrollable entry list.
+                <div style="overflow-y: auto; flex: 1;">
+                    {move || {
+                        let all = entries.get();
+                        if all.is_empty() {
+                            return view! {
+                                <div style="padding: 0.75rem; font-size: 0.75rem; \
+                                            color: #9ca3af; font-style: italic;">
+                                    "No changes yet."
+                                </div>
+                            }
+                            .into_any();
+                        }
+
+                        // r[impl proposal.diff.version-bumps]
+                        let (content, bumps): (Vec<_>, Vec<_>) = all
+                            .into_iter()
+                            .partition(|e| e.kind != ChangeKind::VersionBump);
+
+                        let show_bumps = !bumps.is_empty();
+
+                        view! {
+                            <div style="padding: 0.4rem 0;">
+                                <ChangelogEntryList
+                                    entries=content
+                                    expanded=expanded
+                                    toggle_expanded=toggle_expanded
+                                />
+                                {if show_bumps {
+                                    view! {
+                                        <div>
+                                            <div style="margin-top: 0.75rem; \
+                                                        padding: 0.2rem 0.75rem; \
+                                                        font-size: 0.65rem; font-weight: 700; \
+                                                        text-transform: uppercase; \
+                                                        letter-spacing: 0.05em; color: #9ca3af;">
+                                                "Version bumps"
+                                            </div>
+                                            <ChangelogEntryList
+                                                entries=bumps
+                                                expanded=expanded
+                                                toggle_expanded=toggle_expanded
+                                            />
+                                        </div>
+                                    }
+                                    .into_any()
+                                } else {
+                                    view! { <span /> }.into_any()
+                                }}
+                            </div>
+                        }
+                        .into_any()
+                    }}
+                </div>
+            </aside>
+        </div>
+    }
+}
+
+// ── ChangelogEntryList component ──────────────────────────────────────────────
+
+#[component]
+fn ChangelogEntryList(
+    entries: Vec<ChangelogEntry>,
+    expanded: RwSignal<HashSet<String>>,
+    toggle_expanded: Callback<String>,
+) -> impl IntoView {
+    view! {
+        <div>
+            {entries
+                .into_iter()
+                .map(|entry| {
+                    let key = StoredValue::new(entry.key.clone());
+                    let kind = StoredValue::new(entry.kind.clone());
+                    let label = StoredValue::new(entry.label.clone());
+                    let old_text = StoredValue::new(entry.old_text.clone());
+                    let new_text = StoredValue::new(entry.new_text.clone());
+
+                    let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
+                    let is_expanded =
+                        move || expanded.get().contains(&key.get_value());
+
+                    view! {
+                        <div class="changelog-entry">
+                            <div
+                                class="changelog-entry-header"
+                                class:changelog-entry-header--clickable=has_diff
+                                on:click=move |_| {
+                                    if has_diff {
+                                        toggle_expanded.run(key.get_value());
+                                    }
+                                }
+                            >
+                                <span class=move || {
+                                    format!(
+                                        "changelog-badge changelog-badge--{}",
+                                        kind_slug(kind.get_value()),
+                                    )
+                                }>
+                                    {move || kind_label(kind.get_value())}
+                                </span>
+                                <span class="changelog-entry-label">
+                                    {move || label.get_value()}
+                                </span>
+                                <Show when=move || has_diff>
+                                    <span class="changelog-expand-icon">
+                                        {move || if is_expanded() { "▴" } else { "▾" }}
+                                    </span>
+                                </Show>
+                            </div>
+
+                            // r[impl proposal.diff.expandable]
+                            <Show when=move || is_expanded() && has_diff>
+                                <div class="changelog-diff">
+                                    {move || {
+                                        let old = old_text.get_value();
+                                        let new = new_text.get_value();
+                                        match (old, new) {
+                                            (Some(o), Some(n)) => {
+                                                let (old_spans, new_spans) =
+                                                    word_diff(&o, &n);
+                                                view! {
+                                                    <div class="changelog-diff-block changelog-diff-block--old">
+                                                        <div class="changelog-diff-label">
+                                                            "Before"
+                                                        </div>
+                                                        <div class="changelog-diff-text">
+                                                            {old_spans
+                                                                .into_iter()
+                                                                .map(|(common, word)| {
+                                                                    view! {
+                                                                        <span class:changelog-word--removed=move || {
+                                                                            !common
+                                                                        }>
+                                                                            {word}
+                                                                            " "
+                                                                        </span>
+                                                                    }
+                                                                })
+                                                                .collect::<Vec<_>>()}
+                                                        </div>
+                                                    </div>
+                                                    <div class="changelog-diff-block changelog-diff-block--new">
+                                                        <div class="changelog-diff-label">
+                                                            "After"
+                                                        </div>
+                                                        <div class="changelog-diff-text">
+                                                            {new_spans
+                                                                .into_iter()
+                                                                .map(|(common, word)| {
+                                                                    view! {
+                                                                        <span class:changelog-word--added=move || {
+                                                                            !common
+                                                                        }>
+                                                                            {word}
+                                                                            " "
+                                                                        </span>
+                                                                    }
+                                                                })
+                                                                .collect::<Vec<_>>()}
+                                                        </div>
+                                                    </div>
+                                                }
+                                                .into_any()
+                                            }
+                                            (Some(o), None) => view! {
+                                                <div class="changelog-diff-block changelog-diff-block--old">
+                                                    <div class="changelog-diff-label">"Deleted content"</div>
+                                                    <div class="changelog-diff-text changelog-diff-text--fully-removed">
+                                                        {o}
+                                                    </div>
+                                                </div>
+                                            }
+                                            .into_any(),
+                                            (None, Some(n)) => view! {
+                                                <div class="changelog-diff-block changelog-diff-block--new">
+                                                    <div class="changelog-diff-label">"Added content"</div>
+                                                    <div class="changelog-diff-text changelog-diff-text--fully-added">
+                                                        {n}
+                                                    </div>
+                                                </div>
+                                            }
+                                            .into_any(),
+                                            (None, None) => view! { <span /> }.into_any(),
+                                        }
+                                    }}
+                                </div>
+                            </Show>
+                        </div>
+                    }
+                })
+                .collect::<Vec<_>>()}
+        </div>
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn kind_slug(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Added => "added",
+        ChangeKind::Deleted => "deleted",
+        ChangeKind::Modified => "modified",
+        ChangeKind::Reordered => "reordered",
+        ChangeKind::VersionBump => "bump",
+    }
+}
+
+fn kind_label(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Added => "Added",
+        ChangeKind::Deleted => "Deleted",
+        ChangeKind::Modified => "Modified",
+        ChangeKind::Reordered => "Reordered",
+        ChangeKind::VersionBump => "Version bump",
+    }
+}

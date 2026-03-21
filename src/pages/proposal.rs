@@ -4,7 +4,7 @@ use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    FinaliseFab, SpecBlock, SpecBlockEditor, SpecSidebar, blocks_to_sidebar_data,
+    ChangelogSidebar, FinaliseFab, SpecBlock, SpecBlockEditor, SpecSidebar, blocks_to_sidebar_data,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -371,17 +371,28 @@ pub fn ProposalPage() -> impl IntoView {
                                                                     // r[impl edit.add-section]
                                                                     // r[impl edit.reorder]
                                                                     // r[impl edit.delete]
+                                                                    let initial_blocks = blocks.clone();
+                                                                    let blocks_signal =
+                                                                        RwSignal::new(blocks);
                                                                     let (outline, search_entries) =
-                                                                        blocks_to_sidebar_data(&blocks, &sidebar_title);
+                                                                        blocks_to_sidebar_data(
+                                                                            &blocks_signal.get_untracked(),
+                                                                            &sidebar_title,
+                                                                        );
                                                                     view! {
                                                                         <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
                                                                             <SpecSidebar outline=outline search_entries=search_entries />
                                                                             <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
                                                                                 <SpecBlockEditor
-                                                                                    blocks=blocks
+                                                                                    blocks_signal=blocks_signal
                                                                                     proposal_id=p.id
                                                                                 />
                                                                             </div>
+                                                                            // r[impl proposal.diff.semantic]
+                                                                            <ChangelogSidebar
+                                                                                initial_blocks=initial_blocks
+                                                                                blocks=Signal::from(blocks_signal)
+                                                                            />
                                                                         </div>
                                                                     }
                                                                     .into_any()
