@@ -121,6 +121,47 @@ pub async fn get_proposal_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, Ser
     Ok(parse_blocks_from_content(&content).await)
 }
 
+// r[impl proposal.diff.semantic]
+#[server]
+pub async fn get_base_blocks(proposal_id: i32) -> Result<Vec<SpecBlock>, ServerFnError> {
+    use diesel::prelude::*;
+
+    use crate::components::spec_block_editor::parse_blocks_from_content;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let content = conn
+        .interact(move |conn| {
+            use crate::db::schema::{proposals, spec_files, specs};
+
+            // r[impl repo.multi-spec]
+            // r[impl repo.multi-file]
+            let repository_id: i32 = proposals::table
+                .find(proposal_id)
+                .select(proposals::repository_id)
+                .first(conn)?;
+
+            let contents: Vec<String> = spec_files::table
+                .inner_join(specs::table)
+                .filter(specs::repository_id.eq(repository_id))
+                .order((specs::name.asc(), spec_files::path.asc()))
+                .select(spec_files::content)
+                .load(conn)?;
+
+            Ok::<_, diesel::result::Error>(contents.join("\n\n"))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact error: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query error: {e}")))?;
+
+    Ok(parse_blocks_from_content(&content).await)
+}
+
 #[server]
 pub async fn create_proposal(repo_id: i32, title: String) -> Result<i32, ServerFnError> {
     use diesel::prelude::*;
@@ -216,6 +257,7 @@ pub fn ProposalPage() -> impl IntoView {
 
     let proposal = Resource::new(proposal_id, get_proposal);
     let blocks_resource = Resource::new(proposal_id, get_proposal_blocks);
+    let base_blocks_resource = Resource::new(proposal_id, get_base_blocks);
 
     let editing_title = RwSignal::new(false);
     let title_draft = RwSignal::new(String::new());
@@ -371,7 +413,20 @@ pub fn ProposalPage() -> impl IntoView {
                                                                     // r[impl edit.add-section]
                                                                     // r[impl edit.reorder]
                                                                     // r[impl edit.delete]
-                                                                    let initial_blocks = blocks.clone();
+                                                                    let Some(base_result) =
+                                                                        base_blocks_resource.get()
+                                                                    else {
+                                                                        return view! {
+                                                                            <p class="has-text-grey">
+                                                                                "Loading\u{2026}"
+                                                                            </p>
+                                                                        }
+                                                                        .into_any();
+                                                                    };
+                                                                    let initial_blocks =
+                                                                        base_result.unwrap_or_else(
+                                                                            |_| blocks.clone(),
+                                                                        );
                                                                     let blocks_signal =
                                                                         RwSignal::new(blocks);
                                                                     let (outline, search_entries) =

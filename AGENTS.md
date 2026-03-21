@@ -1,7 +1,7 @@
 <llm-rules>
 - This repo uses jujutsu. Commit changes incrementally as you work; ideally, after every change to a coherent code unit.
 - Use `jj commit` over `jj describe` so that new changes can be applied as a new description easily; we can always squash to put history together where it makes sense.
-- Remember to use --no-pager for jj commands.
+- Remember to use --no-pager for jj commands, but NOT for tracey or other commands.
 - Never write documentation files or readmes.
 - Use conventional commit/describe messages.
 - Never write useless comments that only repeat the code.
