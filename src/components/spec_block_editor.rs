@@ -34,16 +34,16 @@ impl SpecBlock {
     }
 }
 
-// ── SSR-only helpers ──────────────────────────────────────────────────────────
+// ── Helpers available on both SSR and WASM ────────────────────────────────────
 
-#[cfg(feature = "ssr")]
 pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
     use marq::{DocElement, RenderOptions, render};
 
     let doc = match render(content, &RenderOptions::new()).await {
         Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(error = %e, "marq render failed in parse_blocks_from_content");
+        Err(_e) => {
+            #[cfg(feature = "ssr")]
+            tracing::warn!(error = %_e, "marq render failed in parse_blocks_from_content");
             return Vec::new();
         }
     };
@@ -136,7 +136,6 @@ pub fn serialize_blocks(blocks: &[SpecBlock]) -> String {
     out
 }
 
-#[cfg(feature = "ssr")]
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -144,7 +143,6 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-#[cfg(feature = "ssr")]
 fn strip_blockquote_prefixes(raw: &str) -> String {
     raw.lines()
         .map(|line| {
@@ -230,6 +228,46 @@ pub fn SpecBlockEditor(blocks: Vec<SpecBlock>, on_save: Callback<Vec<SpecBlock>>
 
         // r[impl edit.history]
         on_save.run(blocks.get_untracked());
+
+        // Re-render the edited block's HTML in the browser without a server
+        // round-trip. blocks already has the updated text from above.
+        #[cfg(feature = "hydrate")]
+        {
+            use marq::{RenderOptions, render};
+
+            // Reconstruct the minimal raw markdown for just this one block.
+            let raw = blocks.with_untracked(|list| {
+                list.iter().find(|b| b.key == key).map(|b| match &b.kind {
+                    SpecBlockKind::Rule { id, text } => {
+                        format!("r[{}]\n{}\n\n", id, text)
+                    }
+                    SpecBlockKind::Heading { level, text } => {
+                        format!("{} {}\n\n", "#".repeat(*level as usize), text)
+                    }
+                    SpecBlockKind::Paragraph { text } => format!("{}\n\n", text),
+                })
+            });
+
+            if let Some(raw) = raw {
+                leptos::task::spawn_local(async move {
+                    if let Ok(doc) = render(&raw, &RenderOptions::new()).await {
+                        // For rules use the req content HTML (prose only), matching
+                        // how parse_blocks_from_content populates b.html on first load.
+                        // For headings and paragraphs use the full doc.html.
+                        let new_html = if let Some(req) = doc.reqs.first() {
+                            req.html.clone()
+                        } else {
+                            doc.html.clone()
+                        };
+                        blocks.update(|list| {
+                            if let Some(b) = list.iter_mut().find(|b| b.key == key) {
+                                b.html = new_html;
+                            }
+                        });
+                    }
+                });
+            }
+        }
     };
 
     // Closes the editor without writing the draft, reverting the visible text.

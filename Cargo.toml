@@ -44,6 +44,7 @@ hydrate = [
     "dep:wasm-bindgen",
     "dep:console_error_panic_hook",
     "dep:web-sys",
+    "dep:marq",
 ]
 ssr = [
     "leptos/ssr",
