@@ -7,8 +7,6 @@ pub mod github;
 pub mod pages;
 #[cfg(feature = "ssr")]
 pub mod server;
-#[cfg(feature = "ssr")]
-pub mod tracey_config;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

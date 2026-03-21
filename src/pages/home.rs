@@ -128,7 +128,7 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
                 content_len = fetched.content.len(),
                 "fetched tracey config"
             );
-            crate::tracey_config::parse(&fetched.content)
+            facet_styx::from_str::<tracey_config::Config>(&fetched.content)
                 .map_err(|e| {
                     tracing::error!(error = %e, "failed to parse tracey config");
                     ServerFnError::new(format!("Failed to parse tracey config: {e}"))
