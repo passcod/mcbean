@@ -146,7 +146,7 @@ r[edit.history]
 McBean MUST retain the full change history of a proposal indefinitely, including after the proposal is merged.
 The history MUST remain browsable at any point in the future.
 Each history entry MUST record which user made the change.
-For changes made by the LLM edit-assist, the entry MUST record the user on whose behalf the LLM acted.
+For changes made by the LLM edit-assist, the entry MUST record the user on whose behalf the LLM acted, and the prompt that produced the change.
 
 ## Proposals
 
