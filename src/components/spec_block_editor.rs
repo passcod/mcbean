@@ -506,6 +506,7 @@ mod tests {
 
     // ── parse_blocks_from_content: basic cases ────────────────────────────────
 
+    // r[verify view.render]
     #[test]
     fn test_parse_single_rule() {
         let md = "r[foo.bar]\nThis is the rule text.\n";
@@ -524,6 +525,7 @@ mod tests {
         }
     }
 
+    // r[verify view.render]
     #[test]
     fn test_parse_heading_and_rule() {
         let md = "# My Section\n\nr[sec.rule]\nThe rule.\n";
@@ -762,6 +764,7 @@ A simple single-paragraph rule after the multi-para one.
     //   Heading, Rule(simple), Rule(cdrom-partscan+4), Rule(after)
     // — no stray Paragraph blocks from the inner paragraphs of the multi-para rule.
 
+    // r[verify view.render]
     #[test]
     fn test_in_context_block_count() {
         let blocks = run(parse_blocks_from_content(IN_CONTEXT_DOC));
@@ -989,6 +992,79 @@ A simple single-paragraph rule after the multi-para one.
         }
         println!("=== end ===\n");
     }
+
+    // r[verify ids.provisional]
+    #[test]
+    fn test_provisional_id_format() {
+        let id = next_provisional_id();
+        assert!(id.starts_with("new."), "should start with 'new.': {id}");
+        assert!(id.ends_with("+1"), "should end with '+1': {id}");
+        // The hex part between "new." and "+1" must be exactly 8 hex chars.
+        let hex_part = &id[4..id.len() - 2];
+        assert_eq!(hex_part.len(), 8, "hex part should be 8 chars: {hex_part}");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "hex part should be hex: {hex_part}"
+        );
+    }
+
+    // r[verify ids.provisional]
+    #[test]
+    fn test_provisional_ids_are_unique() {
+        let a = next_provisional_id();
+        let b = next_provisional_id();
+        assert_ne!(a, b, "two generated IDs should differ");
+    }
+
+    #[test]
+    fn test_slugify_basic() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn test_slugify_special_chars() {
+        assert_eq!(slugify("foo.bar (baz)"), "foo-bar-baz");
+    }
+
+    #[test]
+    fn test_slugify_collapses_dashes() {
+        assert_eq!(slugify("a -- b"), "a-b");
+    }
+
+    // r[verify view.nav]
+    // r[verify view.search]
+    #[test]
+    fn test_blocks_to_sidebar_data_headings() {
+        let blocks = vec![
+            SpecBlock {
+                key: "1:0".into(),
+                kind: SpecBlockKind::Heading {
+                    level: 1,
+                    text: "Top Section".into(),
+                    anchor: "top-section".into(),
+                },
+                html: String::new(),
+            },
+            SpecBlock {
+                key: "1:1".into(),
+                kind: SpecBlockKind::Rule {
+                    id: "test.rule".into(),
+                    text: "Rule text here".into(),
+                },
+                html: String::new(),
+            },
+        ];
+        let (outlines, search_entries) = blocks_to_sidebar_data(&blocks, "my-spec");
+        assert_eq!(outlines.len(), 1);
+        assert_eq!(outlines[0].name, "my-spec");
+        assert_eq!(outlines[0].headings.len(), 1);
+        assert_eq!(outlines[0].headings[0].text, "Top Section");
+        assert_eq!(outlines[0].headings[0].anchor, "top-section");
+        // Search entries: one for heading + one for rule
+        assert_eq!(search_entries.len(), 2);
+        assert_eq!(search_entries[0].text, "Top Section");
+        assert_eq!(search_entries[1].text, "Rule text here");
+    }
 }
 
 pub fn html_escape(s: &str) -> String {
@@ -1040,11 +1116,6 @@ fn get_or_create_peer_id() -> u64 {
 /// `blocks_out`.  All subsequent mutations update the doc in place and push the
 /// derived blocks back out.  A debounced delta-sync keeps the server in sync;
 /// a background interval poll picks up updates from other peers.
-// r[impl edit.rule-text]
-// r[impl edit.add-rule]
-// r[impl edit.add-section]
-// r[impl edit.reorder]
-// r[impl edit.delete]
 #[component]
 pub fn SpecBlockEditor(
     proposal_id: i32,
@@ -1649,6 +1720,7 @@ pub fn SpecBlockEditor(
     };
 
     // r[impl edit.reorder]
+    // r[impl ids.stable-on-reorder]
     let handle_drop = move |from_key: String, drop_key: String| {
         if from_key == drop_key {
             drag_key.set(None);

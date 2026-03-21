@@ -541,6 +541,7 @@ mod tests {
 
     // ── basic sanity ─────────────────────────────────────────────────────────
 
+    // r[verify view.render]
     #[test]
     fn test_pipeline_single_rule() {
         let blocks = pipeline("r[foo.bar]\nThe rule text.\n");
@@ -554,6 +555,7 @@ mod tests {
         }
     }
 
+    // r[verify view.render]
     #[test]
     fn test_pipeline_heading_and_rule() {
         let blocks = pipeline("# Section\n\nr[s.rule]\nSome text.\n");
@@ -647,6 +649,7 @@ A simple rule after.
         }
     }
 
+    // r[verify view.render]
     #[test]
     fn test_pipeline_in_context_block_count() {
         let blocks = pipeline(IN_CONTEXT);
@@ -723,6 +726,7 @@ A simple rule after.
         rt.block_on(crate::components::spec_block_editor::parse_blocks_from_content(serialised_md))
     }
 
+    // r[verify repo.multi-file]
     #[test]
     fn test_round_trip_single_para_rule_preserved() {
         let blocks = round_trip_pipeline("r[foo.bar]\nThe rule text.\n");
@@ -736,6 +740,7 @@ A simple rule after.
         }
     }
 
+    // r[verify repo.multi-file]
     #[test]
     fn test_round_trip_multi_para_rule_count() {
         let blocks = round_trip_pipeline(IN_CONTEXT);
@@ -784,6 +789,7 @@ A simple rule after.
         }
     }
 
+    // r[verify ids.stable-on-reorder]
     #[test]
     fn test_pipeline_round_trip_rule_ids_preserved() {
         let blocks = pipeline(IN_CONTEXT);
@@ -802,5 +808,214 @@ A simple rule after.
             vec!["iso.simple", "iso.cdrom-partscan+4", "iso.after"],
             "{ids:?}"
         );
+    }
+    // r[verify ids.stable-on-reorder]
+    // r[verify edit.reorder]
+    #[test]
+    fn test_reorder_preserves_rule_ids() {
+        let content = "# Section\n\nr[a.first]\nFirst rule.\n\nr[a.second]\nSecond rule.\n";
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = run(build_doc_from_specs(&specs));
+
+        // Collect the initial rule IDs and their tree node IDs.
+        let blocks_before = loro_doc_to_blocks(&doc);
+        let rule_ids_before: Vec<String> = blocks_before
+            .iter()
+            .filter_map(|b| {
+                if let SpecBlockKind::Rule { id, .. } = &b.kind {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(rule_ids_before, vec!["a.first", "a.second"]);
+
+        // Reorder: move the second rule before the first by finding their tree IDs
+        // and using tree.mov_to.
+        let tree = doc.get_tree(TREE_NAME);
+        let second_block = blocks_before
+            .iter()
+            .find(|b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "a.second"))
+            .unwrap();
+        let first_block = blocks_before
+            .iter()
+            .find(|b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "a.first"))
+            .unwrap();
+
+        let second_id = key_to_tree_id(&second_block.key).unwrap();
+        let first_id = key_to_tree_id(&first_block.key).unwrap();
+        let parent = tree.parent(first_id).unwrap();
+        // Move second before first (index 0 under parent).
+        let siblings = tree.children(parent).unwrap_or_default();
+        let first_idx = siblings.iter().position(|s| *s == first_id).unwrap();
+        tree.mov_to(second_id, parent, first_idx).ok();
+
+        // Rule IDs must be unchanged after reorder.
+        let blocks_after = loro_doc_to_blocks(&doc);
+        let rule_ids_after: Vec<String> = blocks_after
+            .iter()
+            .filter_map(|b| {
+                if let SpecBlockKind::Rule { id, .. } = &b.kind {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Order flipped, but IDs preserved.
+        assert_eq!(rule_ids_after, vec!["a.second", "a.first"]);
+    }
+
+    // r[verify edit.add-rule]
+    #[test]
+    fn test_add_rule_preserves_existing_ids() {
+        let content = "# Section\n\nr[a.first]\nFirst rule.\n";
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = run(build_doc_from_specs(&specs));
+
+        let blocks_before = loro_doc_to_blocks(&doc);
+        assert_eq!(blocks_before.len(), 2); // heading + rule
+
+        // Add a new rule after the existing one.
+        let tree = doc.get_tree(TREE_NAME);
+        let last_block = &blocks_before[1];
+        let last_id = key_to_tree_id(&last_block.key).unwrap();
+        let parent = tree.parent(last_id).unwrap();
+        let siblings = tree.children(parent).unwrap_or_default();
+        let idx = siblings
+            .iter()
+            .position(|s| *s == last_id)
+            .map(|i| i + 1)
+            .unwrap();
+        let new_node = tree.create_at(parent, idx).unwrap();
+        let meta = tree.get_meta(new_node).unwrap();
+        meta.insert("kind", "rule").unwrap();
+        meta.insert("rule_id", "a.new-rule").unwrap();
+        set_text_content(&meta, "New rule text.");
+
+        let blocks_after = loro_doc_to_blocks(&doc);
+        assert_eq!(blocks_after.len(), 3); // heading + 2 rules
+
+        // Original rule ID preserved.
+        let first_rule = blocks_after
+            .iter()
+            .find(|b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "a.first"));
+        assert!(first_rule.is_some(), "original rule ID must still exist");
+
+        // New rule present.
+        let new_rule = blocks_after
+            .iter()
+            .find(|b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "a.new-rule"));
+        assert!(new_rule.is_some(), "new rule must be present");
+    }
+
+    // r[verify edit.delete]
+    #[test]
+    fn test_delete_rule() {
+        let content = "# Section\n\nr[a.first]\nFirst rule.\n\nr[a.second]\nSecond rule.\n";
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = run(build_doc_from_specs(&specs));
+
+        let blocks = loro_doc_to_blocks(&doc);
+        let second_block = blocks
+            .iter()
+            .find(|b| matches!(&b.kind, SpecBlockKind::Rule { id, .. } if id == "a.second"))
+            .unwrap();
+
+        let tree = doc.get_tree(TREE_NAME);
+        let second_id = key_to_tree_id(&second_block.key).unwrap();
+        tree.delete(second_id).ok();
+
+        let blocks_after = loro_doc_to_blocks(&doc);
+        let rule_ids: Vec<&str> = blocks_after
+            .iter()
+            .filter_map(|b| {
+                if let SpecBlockKind::Rule { id, .. } = &b.kind {
+                    Some(id.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(rule_ids, vec!["a.first"]);
+    }
+
+    // r[verify edit.rule-text]
+    #[test]
+    fn test_edit_text_preserves_rule_id() {
+        let content = "r[my.rule]\nOriginal text.\n";
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = run(build_doc_from_specs(&specs));
+
+        let blocks = loro_doc_to_blocks(&doc);
+        assert_eq!(blocks.len(), 1);
+        let rule_key = &blocks[0].key;
+        let node_id = key_to_tree_id(rule_key).unwrap();
+
+        // Modify the text via set_text_content.
+        let tree = doc.get_tree(TREE_NAME);
+        let meta = tree.get_meta(node_id).unwrap();
+        set_text_content(&meta, "Updated text.");
+
+        let blocks_after = loro_doc_to_blocks(&doc);
+        assert_eq!(blocks_after.len(), 1);
+        match &blocks_after[0].kind {
+            SpecBlockKind::Rule { id, text } => {
+                assert_eq!(id, "my.rule", "rule ID must be preserved after text edit");
+                assert_eq!(text, "Updated text.");
+            }
+            other => panic!("expected Rule, got {other:?}"),
+        }
+    }
+
+    // r[verify edit.add-section]
+    #[test]
+    fn test_add_heading() {
+        let content = "# Existing\n\nr[a.rule]\nSome rule.\n";
+        let specs = vec![(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )];
+        let doc = run(build_doc_from_specs(&specs));
+
+        let tree = doc.get_tree(TREE_NAME);
+        let blocks = loro_doc_to_blocks(&doc);
+        let last = &blocks[blocks.len() - 1];
+        let last_id = key_to_tree_id(&last.key).unwrap();
+        let parent = tree.parent(last_id).unwrap();
+        let siblings = tree.children(parent).unwrap_or_default();
+        let idx = siblings.len();
+
+        let new_node = tree.create_at(parent, idx).unwrap();
+        let meta = tree.get_meta(new_node).unwrap();
+        meta.insert("kind", "heading").unwrap();
+        meta.insert("level", 2i64).unwrap();
+        set_text_content(&meta, "New Section");
+
+        let blocks_after = loro_doc_to_blocks(&doc);
+        let headings: Vec<&str> = blocks_after
+            .iter()
+            .filter_map(|b| {
+                if let SpecBlockKind::Heading { text, .. } = &b.kind {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(headings, vec!["Existing", "New Section"]);
     }
 }

@@ -401,11 +401,6 @@ pub fn ProposalPage() -> impl IntoView {
                                             .get()
                                             .map(|result: Result<Vec<SpecBlock>, _>| match result {
                                                 Ok(_) if is_drafting => {
-                                                    // r[impl edit.rule-text]
-                                                    // r[impl edit.add-rule]
-                                                    // r[impl edit.add-section]
-                                                    // r[impl edit.reorder]
-                                                    // r[impl edit.delete]
                                                     let blocks_out = RwSignal::new(Vec::<SpecBlock>::new());
                                                     let sync_error: RwSignal<Option<String>> = RwSignal::new(None);
                                                     // r[impl edit.undo]
