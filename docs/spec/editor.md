@@ -121,12 +121,20 @@ r[edit.assist.prompt]
 While editing within a proposal, users MUST be able to invoke an LLM-assisted edit via a prompt input.
 The prompt MUST default in scope to the section currently in focus, with an option to widen scope to the full spec.
 
-r[edit.assist.staging]
-LLM-suggested edits MUST be presented in a staging area that is separate from the proposal itself.
-Staged changes MUST NOT be applied to the proposal until the user explicitly accepts them, either in full or selectively per change.
+r[edit.assist.apply]
+LLM-suggested edits MUST be applied directly to the proposal content.
 
 r[edit.assist.no-structural-ops]
 The LLM edit-assist MUST NOT be able to trigger proposal submission or perform any action outside of drafting content changes.
+
+r[edit.undo]
+McBean MUST provide unlimited undo for all changes made within a proposal, whether made by the user or by the LLM edit-assist.
+Undo MUST be available at all times while the proposal is in the Drafting state.
+Each LLM-assisted edit MUST be recorded as a discrete undoable step, not as a series of individual character changes.
+
+r[edit.history]
+McBean MUST retain the full change history of a proposal indefinitely, including after the proposal is merged.
+The history MUST remain browsable at any point in the future.
 
 ## Proposals
 
@@ -140,7 +148,7 @@ Users MUST NOT be exposed to branch names or Git concepts directly.
 
 r[proposal.create.prompt]
 When a user initiates a new proposal, McBean MUST present a prompt modal offering to generate an initial draft from a natural language description.
-Submitting the prompt MUST simultaneously derive a candidate proposal title and populate the staging area with suggested content changes per r[edit.assist.staging].
+Submitting the prompt MUST simultaneously derive a candidate proposal title and apply suggested content changes to the proposal per r[edit.assist.apply].
 
 r[proposal.create.dismiss]
 If the user dismisses the prompt modal without submitting, an untitled proposal MUST be created and the editor opened immediately with no further interruption.
