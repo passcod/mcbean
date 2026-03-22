@@ -114,6 +114,7 @@ pub struct Proposal {
     #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
     pub updated_at: Timestamp,
     pub base_snapshot_id: Option<i32>,
+    pub pr_number: Option<i32>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]

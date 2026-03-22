@@ -23,6 +23,7 @@ diesel::table! {
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
         base_snapshot_id -> Nullable<Int4>,
+        pr_number -> Nullable<Int4>,
     }
 }
 
