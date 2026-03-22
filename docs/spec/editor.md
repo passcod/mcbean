@@ -194,14 +194,34 @@ Version bump changes MUST be presented as a distinct, lower-prominence category 
 
 r[proposal.submit]
 Users MUST be able to submit a proposal for review.
-Submission MUST create a pull request in the backing repository.
+Submission triggers the finalisation-then-submission flow described in r[lifecycle.finalising] and r[lifecycle.submitted].
 Users MUST NOT need to interact with GitHub to submit.
 
 ## Proposal Lifecycle
 
 r[lifecycle.drafting]
-A proposal that has no open implementation pull requests is in the Drafting state.
+A newly created proposal starts in the Drafting state.
 In this state the proposal is fully editable.
+
+r[lifecycle.finalising]
+When a user marks a proposal as ready for review, the proposal transitions to the Finalising state.
+In this state the editor is no longer available; the proposal is presented as a read-only changelog of all modifications compared to the base snapshot.
+Any rule that still carries a provisional ID MUST be resolved before the proposal can proceed to submission.
+The user MUST be able to supply a final ID for each such rule.
+The user MUST be able to return the proposal to the Drafting state from this screen.
+
+r[lifecycle.finalising.ids]
+While in the Finalising state, McBean MUST highlight every rule that still has a provisional ID and prompt the user to assign a permanent slug.
+The proposal MUST NOT be submittable until all provisional IDs have been replaced.
+
+r[lifecycle.submitted]
+When the user confirms submission from the Finalising state, the proposal transitions to the Submitted state.
+In this state, McBean MUST create a branch in the backing repository containing the spec changes, and open a pull request from that branch.
+If a Slack webhook is configured for the repository, a notification MUST be sent per r[notify.slack].
+
+r[lifecycle.submitted.reopen]
+While a submitted proposal has no open implementation pull requests targeting its branch, the user MAY transition it back to the Drafting state.
+Doing so MUST convert the backing pull request to draft status and add an editorial note indicating that the proposal has been reopened for editing.
 
 r[lifecycle.in-progress.trigger]
 When one or more implementation pull requests targeting the proposal's branch are opened in the backing repository, the proposal MUST automatically transition to the In Progress state.
@@ -215,7 +235,7 @@ GitHub committers may edit the spec proposal in the backing branch directly (or 
 McBean SHOULD keep track of this and show amendments to the spec in the frozen proposal interface.
 
 r[lifecycle.abandoned]
-If the backing branch's PR is closed without merging, the proposal MUST return to the Drafting state.
+If the backing branch's pull request is closed without merging, the proposal MUST return to the Drafting state.
 McBean MUST indicate that implementation was previously abandoned.
 
 r[lifecycle.merged]
