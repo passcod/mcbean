@@ -79,6 +79,7 @@ ssr = [
     "dep:marq",
     "dep:anyhow",
     "dep:loro",
+    "dep:serde_json",
 ]
 
 

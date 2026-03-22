@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use globset::GlobBuilder;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -61,6 +61,88 @@ pub struct FetchedFile {
     pub path: String,
     pub content: String,
     pub blob_sha: String,
+}
+/// A file path + content pair for committing via the Git Data API.
+#[derive(Debug, Clone)]
+pub struct FileToCommit {
+    pub path: String,
+    pub content: String,
+}
+
+// -- Git Data API request/response types ------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct GitCommitResponse {
+    tree: GitCommitTree,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitCommitTree {
+    sha: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateRefRequest<'a> {
+    #[serde(rename = "ref")]
+    git_ref: &'a str,
+    sha: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateTreeRequest<'a> {
+    base_tree: &'a str,
+    tree: Vec<TreeBlobEntry<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct TreeBlobEntry<'a> {
+    path: &'a str,
+    mode: &'a str,
+    #[serde(rename = "type")]
+    entry_type: &'a str,
+    content: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTreeResponse {
+    sha: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateCommitRequest<'a> {
+    message: &'a str,
+    tree: &'a str,
+    parents: Vec<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateCommitResponseData {
+    sha: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateRefRequest<'a> {
+    sha: &'a str,
+    force: bool,
+}
+
+// -- Pull Request API types -------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct CreatePullRequestBody<'a> {
+    title: &'a str,
+    head: &'a str,
+    base: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PullRequestResponse {
+    pub number: i64,
+    pub state: String,
+    pub merged: Option<bool>,
+    pub draft: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -352,6 +434,270 @@ impl GitHubClient {
         }
 
         Ok(results)
+    }
+
+    // -- Branch management --------------------------------------------------
+
+    /// Create a new branch pointing at `sha`.
+    #[instrument(skip(self), fields(owner, repo, branch_name))]
+    pub async fn create_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> Result<(), GitHubError> {
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/refs");
+        let body = CreateRefRequest {
+            git_ref: &format!("refs/heads/{branch_name}"),
+            sha,
+        };
+        debug!(%url, %branch_name, %sha, "creating branch");
+
+        let resp = self
+            .apply_auth(self.client.post(&url))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(())
+    }
+
+    /// Commit a set of files on top of `parent_sha` and update `branch_name`
+    /// to point at the new commit.
+    #[instrument(skip(self, files), fields(owner, repo, branch_name, file_count = files.len()))]
+    pub async fn commit_files(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        parent_sha: &str,
+        message: &str,
+        files: &[FileToCommit],
+    ) -> Result<String, GitHubError> {
+        // 1. Get the tree SHA of the parent commit.
+        let commit_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/commits/{parent_sha}");
+        let resp = self.apply_auth(self.client.get(&commit_url)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let parent_commit: GitCommitResponse = resp.json().await?;
+        let base_tree_sha = parent_commit.tree.sha;
+
+        // 2. Create a new tree with the file changes.
+        let tree_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/trees");
+        let tree_entries: Vec<TreeBlobEntry<'_>> = files
+            .iter()
+            .map(|f| TreeBlobEntry {
+                path: &f.path,
+                mode: "100644",
+                entry_type: "blob",
+                content: &f.content,
+            })
+            .collect();
+        let create_tree = CreateTreeRequest {
+            base_tree: &base_tree_sha,
+            tree: tree_entries,
+        };
+        let resp = self
+            .apply_auth(self.client.post(&tree_url))
+            .json(&create_tree)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let new_tree: CreateTreeResponse = resp.json().await?;
+
+        // 3. Create the commit.
+        let commit_create_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/commits");
+        let create_commit = CreateCommitRequest {
+            message,
+            tree: &new_tree.sha,
+            parents: vec![parent_sha],
+        };
+        let resp = self
+            .apply_auth(self.client.post(&commit_create_url))
+            .json(&create_commit)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let new_commit: CreateCommitResponseData = resp.json().await?;
+
+        // 4. Update the branch ref.
+        let ref_url =
+            format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/refs/heads/{branch_name}");
+        let update_ref = UpdateRefRequest {
+            sha: &new_commit.sha,
+            force: false,
+        };
+        let resp = self
+            .apply_auth(self.client.patch(&ref_url))
+            .json(&update_ref)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        info!(new_sha = %new_commit.sha, "committed files to branch");
+        Ok(new_commit.sha)
+    }
+
+    // -- Pull request management --------------------------------------------
+
+    /// Create a pull request and return its number.
+    #[instrument(skip(self), fields(owner, repo, head, base))]
+    pub async fn create_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        head: &str,
+        base: &str,
+        body: Option<&str>,
+    ) -> Result<i64, GitHubError> {
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls");
+        let req = CreatePullRequestBody {
+            title,
+            head,
+            base,
+            body,
+        };
+        debug!(%url, "creating pull request");
+
+        let resp = self
+            .apply_auth(self.client.post(&url))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let pr: PullRequestResponse = resp.json().await?;
+        info!(pr_number = pr.number, "pull request created");
+        Ok(pr.number)
+    }
+
+    /// Convert an existing PR to draft mode using the GraphQL API, and post
+    /// a comment explaining the proposal was reopened for editing.
+    #[instrument(skip(self), fields(owner, repo, pr_number))]
+    pub async fn convert_pr_to_draft_with_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+        comment: &str,
+    ) -> Result<(), GitHubError> {
+        // Post the comment via REST.
+        let comment_url =
+            format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/issues/{pr_number}/comments");
+        let comment_body = serde_json::json!({ "body": comment });
+        let resp = self
+            .apply_auth(self.client.post(&comment_url))
+            .json(&comment_body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            warn!(pr_number, %body, "failed to post PR comment");
+        }
+
+        // Convert to draft via GraphQL (REST doesn't support this).
+        let graphql_url = format!("{GITHUB_API_BASE}/graphql");
+        let query = "mutation(: ID!) { convertPullRequestToDraft(input: { pullRequestId:  }) { pullRequest { id } } }";
+
+        // We need the node_id of the PR.
+        let pr_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
+        let resp = self.apply_auth(self.client.get(&pr_url)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        #[derive(Deserialize)]
+        struct PrNodeId {
+            node_id: String,
+        }
+        let pr_data: PrNodeId = resp.json().await?;
+
+        let gql_body = serde_json::json!({
+            "query": query,
+            "variables": { "id": pr_data.node_id }
+        });
+        let resp = self
+            .apply_auth(self.client.post(&graphql_url))
+            .json(&gql_body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        info!(pr_number, "converted PR to draft with comment");
+        Ok(())
+    }
+
+    /// Send a Slack notification via incoming webhook.
+    #[instrument(skip(self, webhook_url))]
+    pub async fn send_slack_notification(
+        &self,
+        webhook_url: &str,
+        text: &str,
+    ) -> Result<(), GitHubError> {
+        let body = serde_json::json!({ "text": text });
+        let resp = self.client.post(webhook_url).json(&body).send().await?;
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            warn!(%body, "slack notification failed");
+        }
+        Ok(())
     }
 }
 
