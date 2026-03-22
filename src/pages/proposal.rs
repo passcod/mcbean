@@ -229,12 +229,344 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
+// r[impl lifecycle.finalising]
+#[server]
+pub async fn finalise_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+
+        let current_status: String = proposals::table
+            .find(proposal_id)
+            .select(proposals::status)
+            .first(conn)?;
+
+        if current_status != "drafting" {
+            return Err(diesel::result::Error::QueryBuilderError(
+                format!("cannot finalise a proposal in '{current_status}' state").into(),
+            ));
+        }
+
+        diesel::update(proposals::table.find(proposal_id))
+            .set(proposals::status.eq("finalising"))
+            .execute(conn)?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("{e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
+}
+
+/// Return the proposal to drafting from the finalising screen.
+// r[impl lifecycle.finalising]
+#[server]
+pub async fn unfinalise_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+
+        let current_status: String = proposals::table
+            .find(proposal_id)
+            .select(proposals::status)
+            .first(conn)?;
+
+        if current_status != "finalising" {
+            return Err(diesel::result::Error::QueryBuilderError(
+                format!("cannot unfinalise a proposal in '{current_status}' state").into(),
+            ));
+        }
+
+        diesel::update(proposals::table.find(proposal_id))
+            .set(proposals::status.eq("drafting"))
+            .execute(conn)?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("{e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
+}
+
+/// Submit the proposal: create a branch, commit spec files, open a PR, send Slack.
+// r[impl lifecycle.submitted]
 // r[impl proposal.submit]
 // r[impl ids.finalise-phase]
 #[server]
-pub async fn finalise_proposal(_proposal_id: i32) -> Result<(), ServerFnError> {
-    // TODO: run LLM finalisation pass, present ID review to user, create PR.
-    Err(ServerFnError::new("Finalisation not yet implemented"))
+pub async fn submit_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    use crate::components::loro_doc::{doc_to_markdown_files, reconstruct_doc};
+    use crate::github::FileToCommit;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let github = use_context::<crate::github::GitHubClient>()
+        .ok_or_else(|| ServerFnError::new("No GitHub client"))?;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    // Load proposal + repo info in one interact call.
+    let (
+        branch_name,
+        title,
+        repo_owner,
+        repo_name,
+        default_branch,
+        slack_url,
+        base_bytes,
+        update_rows,
+    ) = conn
+        .interact(move |conn| {
+            use crate::components::spec_block_editor::resolve_base_snapshot_id;
+            use crate::db::schema::{
+                proposal_loro_updates, proposals, repositories, spec_snapshots,
+            };
+
+            let (branch_name, title, status, repo_id): (String, Option<String>, String, i32) =
+                proposals::table
+                    .find(proposal_id)
+                    .select((
+                        proposals::branch_name,
+                        proposals::title,
+                        proposals::status,
+                        proposals::repository_id,
+                    ))
+                    .first(conn)?;
+
+            if status != "finalising" {
+                return Err(diesel::result::Error::QueryBuilderError(
+                    format!("cannot submit a proposal in '{status}' state").into(),
+                ));
+            }
+
+            let (repo_owner, repo_name, default_branch, slack_url): (
+                String,
+                String,
+                String,
+                Option<String>,
+            ) = repositories::table
+                .find(repo_id)
+                .select((
+                    repositories::owner,
+                    repositories::name,
+                    repositories::default_branch,
+                    repositories::slack_webhook_url,
+                ))
+                .first(conn)?;
+
+            let sid = resolve_base_snapshot_id(proposal_id, conn)?;
+
+            let base_bytes: Vec<u8> = spec_snapshots::table
+                .find(sid)
+                .select(spec_snapshots::loro_bytes)
+                .first(conn)?;
+
+            let update_rows: Vec<Vec<u8>> = proposal_loro_updates::table
+                .filter(proposal_loro_updates::proposal_id.eq(proposal_id))
+                .order(proposal_loro_updates::id.asc())
+                .select(proposal_loro_updates::update_bytes)
+                .load(conn)?;
+
+            Ok((
+                branch_name,
+                title,
+                repo_owner,
+                repo_name,
+                default_branch,
+                slack_url,
+                base_bytes,
+                update_rows,
+            ))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
+    // Reconstruct the Loro doc and export to markdown files.
+    let doc = reconstruct_doc(&base_bytes, &update_rows)
+        .map_err(|e| ServerFnError::new(format!("reconstruct: {e}")))?;
+
+    let md_files = doc_to_markdown_files(&doc);
+    if md_files.is_empty() {
+        return Err(ServerFnError::new("No spec files to commit"));
+    }
+
+    let files: Vec<FileToCommit> = md_files
+        .into_iter()
+        .map(|(path, content)| FileToCommit { path, content })
+        .collect();
+
+    // Create branch from default branch HEAD.
+    let head_sha = github
+        .get_branch_head_sha(&repo_owner, &repo_name, &default_branch)
+        .await
+        .map_err(|e| ServerFnError::new(format!("get HEAD: {e}")))?;
+
+    github
+        .create_branch(&repo_owner, &repo_name, &branch_name, &head_sha)
+        .await
+        .map_err(|e| ServerFnError::new(format!("create branch: {e}")))?;
+
+    // Commit spec files.
+    let pr_title = title
+        .clone()
+        .unwrap_or_else(|| format!("Proposal #{proposal_id}"));
+    let commit_msg = format!("spec: {pr_title}");
+
+    github
+        .commit_files(
+            &repo_owner,
+            &repo_name,
+            &branch_name,
+            &head_sha,
+            &commit_msg,
+            &files,
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("commit files: {e}")))?;
+
+    // Open PR.
+    let pr_number = github
+        .create_pull_request(
+            &repo_owner,
+            &repo_name,
+            &pr_title,
+            &branch_name,
+            &default_branch,
+            None,
+        )
+        .await
+        .map_err(|e| ServerFnError::new(format!("create PR: {e}")))?;
+
+    // Update proposal status and store PR number.
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+    let pr_num_i32 = pr_number as i32;
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+        diesel::update(proposals::table.find(proposal_id))
+            .set((
+                proposals::status.eq("submitted"),
+                proposals::pr_number.eq(Some(pr_num_i32)),
+            ))
+            .execute(conn)
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("{e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
+
+    // r[impl notify.slack]
+    if let Some(ref url) = slack_url {
+        let text = format!(
+            "New spec proposal submitted: *{}* (PR #{pr_number})",
+            title
+                .as_deref()
+                .unwrap_or(&format!("Proposal #{proposal_id}"))
+        );
+        // Fire-and-forget; don't fail submission on Slack errors.
+        let _ = github.send_slack_notification(url, &text).await;
+    }
+
+    Ok(())
+}
+
+/// Reopen a submitted proposal back to drafting.
+// r[impl lifecycle.submitted.reopen]
+#[server]
+pub async fn reopen_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let github = use_context::<crate::github::GitHubClient>()
+        .ok_or_else(|| ServerFnError::new("No GitHub client"))?;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let (status, pr_number, repo_owner, repo_name) = conn
+        .interact(move |conn| {
+            use crate::db::schema::{proposals, repositories};
+
+            let (status, pr_number, repo_id): (String, Option<i32>, i32) = proposals::table
+                .find(proposal_id)
+                .select((
+                    proposals::status,
+                    proposals::pr_number,
+                    proposals::repository_id,
+                ))
+                .first(conn)?;
+
+            let (repo_owner, repo_name): (String, String) = repositories::table
+                .find(repo_id)
+                .select((repositories::owner, repositories::name))
+                .first(conn)?;
+
+            Ok::<_, diesel::result::Error>((status, pr_number, repo_owner, repo_name))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
+    if status != "submitted" {
+        return Err(ServerFnError::new(format!(
+            "cannot reopen a proposal in '{status}' state"
+        )));
+    }
+
+    // Convert the backing PR to draft and add a comment.
+    if let Some(pr_num) = pr_number {
+        github
+            .convert_pr_to_draft_with_comment(
+                &repo_owner,
+                &repo_name,
+                pr_num as i64,
+                "This proposal has been reopened for editing in McBean. The pull request has been converted to draft.",
+            )
+            .await
+            .map_err(|e| ServerFnError::new(format!("convert PR to draft: {e}")))?;
+    }
+
+    // Transition back to drafting.
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+        diesel::update(proposals::table.find(proposal_id))
+            .set(proposals::status.eq("drafting"))
+            .execute(conn)
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("{e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
+
+    Ok(())
 }
 
 #[component]
