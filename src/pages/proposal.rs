@@ -525,24 +525,28 @@ pub async fn submit_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
         .map(|(path, content)| FileToCommit { path, content })
         .collect();
 
-    let head_sha = github
-        .get_branch_head_sha(&repo_owner, &repo_name, &default_branch)
-        .await
-        .map_err(|e| ServerFnError::new(format!("get HEAD: {e}")))?;
-
     // r[impl lifecycle.submitted.resubmit]
     let is_resubmit = existing_pr_number.is_some();
-    if is_resubmit {
+
+    // For first submission, branch from the default branch HEAD.
+    // For resubmission, commit on top of the existing proposal branch HEAD so
+    // history is preserved and the PR is never force-pushed.
+    let head_sha = if is_resubmit {
         github
-            .force_update_branch(&repo_owner, &repo_name, &branch_name, &head_sha)
+            .get_branch_head_sha(&repo_owner, &repo_name, &branch_name)
             .await
-            .map_err(|e| ServerFnError::new(format!("force-update branch: {e}")))?;
+            .map_err(|e| ServerFnError::new(format!("get branch HEAD: {e}")))?
     } else {
+        let sha = github
+            .get_branch_head_sha(&repo_owner, &repo_name, &default_branch)
+            .await
+            .map_err(|e| ServerFnError::new(format!("get HEAD: {e}")))?;
         github
-            .create_branch(&repo_owner, &repo_name, &branch_name, &head_sha)
+            .create_branch(&repo_owner, &repo_name, &branch_name, &sha)
             .await
             .map_err(|e| ServerFnError::new(format!("create branch: {e}")))?;
-    }
+        sha
+    };
 
     // Commit spec files.
     let pr_title = title

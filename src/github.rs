@@ -471,37 +471,6 @@ impl GitHubClient {
         Ok(())
     }
 
-    /// Force-update an existing branch to point at `sha`.
-    // r[impl lifecycle.submitted.resubmit]
-    #[instrument(skip(self), fields(owner, repo, branch_name))]
-    pub async fn force_update_branch(
-        &self,
-        owner: &str,
-        repo: &str,
-        branch_name: &str,
-        sha: &str,
-    ) -> Result<(), GitHubError> {
-        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/refs/heads/{branch_name}");
-        let body = UpdateRefRequest { sha, force: true };
-        debug!(%url, %branch_name, %sha, "force-updating branch");
-
-        let resp = self
-            .apply_auth(self.client.patch(&url))
-            .json(&body)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
-                status: status.as_u16(),
-                body,
-            });
-        }
-        Ok(())
-    }
-
     /// Commit a set of files on top of `parent_sha` and update `branch_name`
     /// to point at the new commit.
     #[instrument(skip(self, files), fields(owner, repo, branch_name, file_count = files.len()))]
@@ -673,7 +642,7 @@ impl GitHubClient {
 
         // Convert to draft via GraphQL (REST doesn't support this).
         let graphql_url = format!("{GITHUB_API_BASE}/graphql");
-        let query = "mutation(: ID!) { convertPullRequestToDraft(input: { pullRequestId:  }) { pullRequest { id } } }";
+        let query = "mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { id } } }";
 
         // We need the node_id of the PR.
         let pr_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
