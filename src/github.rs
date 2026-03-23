@@ -1,9 +1,26 @@
 use std::collections::HashMap;
 
 use globset::GlobBuilder;
+use graphql_client::{GraphQLQuery, Response as GraphqlResponse};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/convert_pr_to_draft.graphql",
+    response_derives = "Debug"
+)]
+struct ConvertPrToDraft;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "graphql/schema.graphql",
+    query_path = "graphql/mark_pr_ready_for_review.graphql",
+    response_derives = "Debug"
+)]
+struct MarkPrReadyForReview;
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
@@ -644,46 +661,25 @@ impl GitHubClient {
         }
 
         // Convert to draft via GraphQL (REST doesn't support this).
+        let node_id = self.get_pr_node_id(owner, repo, pr_number).await?;
+
         let graphql_url = format!("{GITHUB_API_BASE}/graphql");
-        let query = "mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { id } } }";
-
-        // We need the node_id of the PR.
-        let pr_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
-        let resp = self.apply_auth(self.client.get(&pr_url)).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
-                status: status.as_u16(),
-                body,
-            });
-        }
-
-        #[derive(Deserialize)]
-        struct PrNodeId {
-            node_id: String,
-        }
-        let pr_data: PrNodeId = resp.json().await?;
-
-        let gql_body = serde_json::json!({
-            "query": query,
-            "variables": { "id": pr_data.node_id }
-        });
-        let resp = self
+        let body = ConvertPrToDraft::build_query(convert_pr_to_draft::Variables { id: node_id });
+        let resp: GraphqlResponse<convert_pr_to_draft::ResponseData> = self
             .apply_auth(self.client.post(&graphql_url))
-            .json(&gql_body)
+            .json(&body)
             .send()
+            .await?
+            .json()
             .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
-                status: status.as_u16(),
-                body,
-            });
+        if let Some(errors) = resp.errors {
+            let msg = errors
+                .iter()
+                .map(|e| e.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(GitHubError::Graphql(msg));
         }
-        let body: serde_json::Value = resp.json().await?;
-        check_graphql_errors(&body)?;
 
         info!(pr_number, "converted PR to draft with comment");
         Ok(())
@@ -698,44 +694,26 @@ impl GitHubClient {
         repo: &str,
         pr_number: i64,
     ) -> Result<(), GitHubError> {
-        let pr_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
-        let resp = self.apply_auth(self.client.get(&pr_url)).send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
-                status: status.as_u16(),
-                body,
-            });
-        }
-
-        #[derive(Deserialize)]
-        struct PrNodeId {
-            node_id: String,
-        }
-        let pr_data: PrNodeId = resp.json().await?;
+        let node_id = self.get_pr_node_id(owner, repo, pr_number).await?;
 
         let graphql_url = format!("{GITHUB_API_BASE}/graphql");
-        let query = "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }";
-        let gql_body = serde_json::json!({
-            "query": query,
-            "variables": { "id": pr_data.node_id }
-        });
-        let resp = self
+        let body =
+            MarkPrReadyForReview::build_query(mark_pr_ready_for_review::Variables { id: node_id });
+        let resp: GraphqlResponse<mark_pr_ready_for_review::ResponseData> = self
             .apply_auth(self.client.post(&graphql_url))
-            .json(&gql_body)
+            .json(&body)
             .send()
+            .await?
+            .json()
             .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
-                status: status.as_u16(),
-                body,
-            });
+        if let Some(errors) = resp.errors {
+            let msg = errors
+                .iter()
+                .map(|e| e.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(GitHubError::Graphql(msg));
         }
-        let body: serde_json::Value = resp.json().await?;
-        check_graphql_errors(&body)?;
 
         info!(pr_number, "marked PR as ready for review");
         Ok(())
@@ -755,6 +733,31 @@ impl GitHubClient {
             warn!(%body, "slack notification failed");
         }
         Ok(())
+    }
+
+    /// Fetch the GraphQL node ID for a pull request.
+    async fn get_pr_node_id(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<String, GitHubError> {
+        #[derive(Deserialize)]
+        struct PrNodeId {
+            node_id: String,
+        }
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
+        let resp = self.apply_auth(self.client.get(&url)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let pr: PrNodeId = resp.json().await?;
+        Ok(pr.node_id)
     }
 
     /// Get the state of a single PR by number.
@@ -806,30 +809,6 @@ impl GitHubClient {
         }
         Ok(resp.json().await?)
     }
-}
-
-/// Check a GraphQL response body for a top-level `"errors"` field and return
-/// a `GitHubError::Graphql` if any are present. GraphQL always returns HTTP 200
-/// even for errors, so an HTTP status check alone is insufficient.
-fn check_graphql_errors(body: &serde_json::Value) -> Result<(), GitHubError> {
-    if let Some(errors) = body.get("errors") {
-        let msg = errors
-            .as_array()
-            .and_then(|arr| {
-                let msgs: Vec<&str> = arr
-                    .iter()
-                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
-                    .collect();
-                if msgs.is_empty() {
-                    None
-                } else {
-                    Some(msgs.join("; "))
-                }
-            })
-            .unwrap_or_else(|| errors.to_string());
-        return Err(GitHubError::Graphql(msg));
-    }
-    Ok(())
 }
 
 /// Decode base64 content from GitHub API responses, which include newlines

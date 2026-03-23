@@ -1,0 +1,55 @@
+scalar ID
+scalar String
+scalar Boolean
+scalar URI
+scalar DateTime
+scalar HTML
+scalar Int
+
+type Query {
+  node(id: ID!): Node
+}
+
+interface Node {
+  id: ID!
+}
+
+type Mutation {
+  convertPullRequestToDraft(input: ConvertPullRequestToDraftInput!): ConvertPullRequestToDraftPayload
+  markPullRequestReadyForReview(input: MarkPullRequestReadyForReviewInput!): MarkPullRequestReadyForReviewPayload
+}
+
+input ConvertPullRequestToDraftInput {
+  pullRequestId: ID!
+  clientMutationId: String
+}
+
+type ConvertPullRequestToDraftPayload {
+  clientMutationId: String
+  pullRequest: PullRequest
+}
+
+input MarkPullRequestReadyForReviewInput {
+  pullRequestId: ID!
+  clientMutationId: String
+}
+
+type MarkPullRequestReadyForReviewPayload {
+  clientMutationId: String
+  pullRequest: PullRequest
+}
+
+type PullRequest implements Node {
+  id: ID!
+  number: Int!
+  title: String!
+  state: PullRequestState!
+  isDraft: Boolean!
+  url: URI!
+}
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+}
