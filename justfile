@@ -9,6 +9,7 @@ default:
 setup-tools:
     @command -v cargo-binstall >/dev/null 2>&1 || cargo install cargo-binstall --locked
     cargo binstall -y diesel_cli cargo-leptos cargo-nextest
+    @command -v tracey >/dev/null 2>&1 || curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bearcove/tracey/releases/latest/download/tracey-installer.sh | sh
 
 # Run cargo-leptos in watch mode
 watch:
