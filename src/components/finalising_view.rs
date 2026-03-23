@@ -300,3 +300,91 @@ fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
         </div>
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::spec_block_editor::html_escape;
+
+    fn rule_block(key: &str, id: &str, text: &str) -> SpecBlock {
+        SpecBlock {
+            key: key.to_string(),
+            kind: SpecBlockKind::Rule {
+                id: id.to_string(),
+                text: text.to_string(),
+            },
+            html: format!("<p>{}</p>", html_escape(text)),
+        }
+    }
+
+    fn heading_block(key: &str, level: u8, text: &str) -> SpecBlock {
+        SpecBlock {
+            key: key.to_string(),
+            kind: SpecBlockKind::Heading {
+                level,
+                text: text.to_string(),
+                anchor: text.to_lowercase().replace(' ', "-"),
+            },
+            html: format!("<h{level}>{}</h{level}>", html_escape(text)),
+        }
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_provisional_id_detected() {
+        assert!(is_provisional_id("new.abcd1234+1"));
+        assert!(is_provisional_id("new.00000000+1"));
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_final_id_not_provisional() {
+        assert!(!is_provisional_id("security.auth-tokens"));
+        assert!(!is_provisional_id("repo.connect+2"));
+        assert!(!is_provisional_id(""));
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_provisional_rules_collects_only_provisional() {
+        let blocks = vec![
+            heading_block("1:0", 1, "Section"),
+            rule_block("1:1", "new.aabbccdd+1", "A new rule"),
+            rule_block("1:2", "repo.connect", "An existing rule"),
+            rule_block("1:3", "new.11223344+1", "Another new rule"),
+        ];
+        let provs = provisional_rules(&blocks);
+        assert_eq!(provs.len(), 2);
+        assert_eq!(provs[0].1, "new.aabbccdd+1");
+        assert_eq!(provs[1].1, "new.11223344+1");
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_provisional_rules_empty_when_all_final() {
+        let blocks = vec![
+            rule_block("1:0", "repo.connect", "Connect a repo"),
+            rule_block("1:1", "repo.multi-spec", "Multiple specs"),
+        ];
+        assert!(provisional_rules(&blocks).is_empty());
+    }
+
+    // trc[verify lifecycle.finalising]
+    #[test]
+    fn test_provisional_rules_ignores_headings_and_paragraphs() {
+        let blocks = vec![
+            heading_block("1:0", 1, "Section"),
+            SpecBlock {
+                key: "1:1".to_string(),
+                kind: SpecBlockKind::Paragraph {
+                    text: "Some prose".to_string(),
+                },
+                html: "<p>Some prose</p>".to_string(),
+            },
+            rule_block("1:2", "new.deadbeef+1", "A provisional rule"),
+        ];
+        let provs = provisional_rules(&blocks);
+        assert_eq!(provs.len(), 1);
+        assert_eq!(provs[0].0, "1:2");
+    }
+}
