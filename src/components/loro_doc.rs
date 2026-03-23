@@ -346,6 +346,70 @@ pub fn reconstruct_doc(base: &[u8], update_rows: &[Vec<u8>]) -> anyhow::Result<L
     Ok(doc)
 }
 
+// ── Rule ID manipulation ──────────────────────────────────────────────────────
+
+/// Apply a set of rule ID renames to the Loro doc.
+///
+/// Each entry in `overrides` is `(tree_key, new_rule_id)` where `tree_key` is
+/// the `"peer:counter"` key of a tree node whose `rule_id` metadata should be
+/// replaced.  Only nodes of kind `"rule"` are touched.
+#[cfg(feature = "ssr")]
+pub fn rename_rule_ids(doc: &LoroDoc, overrides: &[(String, String)]) -> anyhow::Result<()> {
+    if overrides.is_empty() {
+        return Ok(());
+    }
+    let tree = doc.get_tree(TREE_NAME);
+    for (key, new_id) in overrides {
+        let tid = key_to_tree_id(key).ok_or_else(|| anyhow::anyhow!("invalid tree key: {key}"))?;
+        let meta = tree
+            .get_meta(tid)
+            .map_err(|e| anyhow::anyhow!("get_meta for {key}: {e}"))?;
+        let kind = get_str(&meta, "kind");
+        if kind != KIND_RULE {
+            return Err(anyhow::anyhow!(
+                "node {key} is kind '{kind}', expected 'rule'"
+            ));
+        }
+        meta.insert("rule_id", new_id.as_str())
+            .map_err(|e| anyhow::anyhow!("set rule_id on {key}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Returns `true` if any rule node in the doc still carries a provisional ID
+/// (one starting with `"new."`).
+#[cfg(feature = "ssr")]
+pub fn has_provisional_ids(doc: &LoroDoc) -> bool {
+    let tree = doc.get_tree(TREE_NAME);
+    has_provisional_ids_under(&tree, TreeParentId::Root)
+}
+
+#[cfg(feature = "ssr")]
+fn has_provisional_ids_under(tree: &LoroTree, parent: TreeParentId) -> bool {
+    for node_id in tree.children(parent).unwrap_or_default() {
+        let meta = match tree.get_meta(node_id) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let kind = get_str(&meta, "kind");
+        match kind.as_str() {
+            KIND_RULE => {
+                let rule_id = get_str(&meta, "rule_id");
+                if rule_id.starts_with("new.") {
+                    return true;
+                }
+            }
+            KIND_SPEC | KIND_FILE | KIND_HEADING => {
+                if has_provisional_ids_under(tree, TreeParentId::Node(node_id)) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 // ── Serialize: LoroDoc → per-file Markdown ────────────────────────────────────
 
 /// Walk the entire tree and produce `(file_path, markdown_content)` pairs for
@@ -1017,5 +1081,84 @@ A simple rule after.
             })
             .collect();
         assert_eq!(headings, vec!["Existing", "New Section"]);
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_rename_rule_ids() {
+        let content = "# Section\n\n> r[new.aabb0011]\n> A provisional rule\n\n> r[existing.rule]\n> An existing rule\n";
+        let doc = run(build_doc_from_specs(&[(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )]));
+
+        // Find the provisional rule's key.
+        let blocks = loro_doc_to_blocks(&doc);
+        let prov_key = blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                SpecBlockKind::Rule { id, .. } if id == "new.aabb0011" => Some(b.key.clone()),
+                _ => None,
+            })
+            .expect("provisional rule should exist");
+
+        assert!(has_provisional_ids(&doc));
+
+        rename_rule_ids(&doc, &[(prov_key, "section.my-new-rule".to_string())]).unwrap();
+
+        assert!(!has_provisional_ids(&doc));
+
+        // Verify the markdown output uses the new ID.
+        let files = doc_to_markdown_files(&doc);
+        let (_, md) = &files[0];
+        assert!(
+            md.contains("r[section.my-new-rule]"),
+            "markdown should contain renamed ID, got: {md}"
+        );
+        assert!(
+            !md.contains("r[new.aabb0011]"),
+            "markdown should not contain old provisional ID"
+        );
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_has_provisional_ids_false_when_none() {
+        let content = "# Section\n\n> r[repo.connect]\n> Connect a repo\n";
+        let doc = run(build_doc_from_specs(&[(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )]));
+        assert!(!has_provisional_ids(&doc));
+    }
+
+    // trc[verify lifecycle.finalising.ids]
+    #[test]
+    fn test_rename_preserves_other_rules() {
+        let content =
+            "# Section\n\n> r[new.deadbeef]\n> New rule\n\n> r[keep.this]\n> Existing rule\n";
+        let doc = run(build_doc_from_specs(&[(
+            "test-spec".to_string(),
+            vec![("test.md".to_string(), content.to_string())],
+        )]));
+
+        let blocks = loro_doc_to_blocks(&doc);
+        let prov_key = blocks
+            .iter()
+            .find_map(|b| match &b.kind {
+                SpecBlockKind::Rule { id, .. } if id.starts_with("new.") => Some(b.key.clone()),
+                _ => None,
+            })
+            .unwrap();
+
+        rename_rule_ids(&doc, &[(prov_key, "section.replaced".to_string())]).unwrap();
+
+        let files = doc_to_markdown_files(&doc);
+        let (_, md) = &files[0];
+        assert!(md.contains("r[section.replaced]"));
+        assert!(
+            md.contains("r[keep.this]"),
+            "existing rule ID should be preserved"
+        );
     }
 }

@@ -309,10 +309,15 @@ pub async fn unfinalise_proposal(proposal_id: i32) -> Result<(), ServerFnError> 
 // r[impl proposal.submit]
 // r[impl ids.finalise-phase]
 #[server]
-pub async fn submit_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
+pub async fn submit_proposal(
+    proposal_id: i32,
+    id_overrides: Vec<(String, String)>,
+) -> Result<(), ServerFnError> {
     use diesel::prelude::*;
 
-    use crate::components::loro_doc::{doc_to_markdown_files, reconstruct_doc};
+    use crate::components::loro_doc::{
+        doc_to_markdown_files, has_provisional_ids, reconstruct_doc, rename_rule_ids,
+    };
     use crate::github::FileToCommit;
 
     let pool =
@@ -402,9 +407,19 @@ pub async fn submit_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
         .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
         .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
 
-    // Reconstruct the Loro doc and export to markdown files.
+    // Reconstruct the Loro doc, apply ID renames, and export to markdown files.
     let doc = reconstruct_doc(&base_bytes, &update_rows)
         .map_err(|e| ServerFnError::new(format!("reconstruct: {e}")))?;
+
+    // r[impl lifecycle.finalising.ids]
+    rename_rule_ids(&doc, &id_overrides)
+        .map_err(|e| ServerFnError::new(format!("rename rule IDs: {e}")))?;
+
+    if has_provisional_ids(&doc) {
+        return Err(ServerFnError::new(
+            "Cannot submit: one or more rules still have provisional IDs",
+        ));
+    }
 
     let md_files = doc_to_markdown_files(&doc);
     if md_files.is_empty() {
@@ -612,9 +627,10 @@ pub fn ProposalPage() -> impl IntoView {
     });
 
     // Finalising -> Submitted
-    let submit_action = Action::new(move |_: &()| {
+    let submit_action = Action::new(move |overrides: &Vec<(String, String)>| {
         let pid = proposal_id();
-        async move { submit_proposal(pid).await }
+        let overrides = overrides.clone();
+        async move { submit_proposal(pid, overrides).await }
     });
 
     // Submitted -> Drafting
@@ -858,8 +874,8 @@ pub fn ProposalPage() -> impl IntoView {
                                                             on_back=Callback::new(move |_| {
                                                                 unfinalise_action.dispatch(());
                                                             })
-                                                            on_submit=Callback::new(move |_| {
-                                                                submit_action.dispatch(());
+                                                            on_submit=Callback::new(move |overrides: Vec<(String, String)>| {
+                                                                submit_action.dispatch(overrides);
                                                             })
                                                             submitting=submitting_signal
                                                             submit_error=submit_err_signal

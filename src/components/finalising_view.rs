@@ -33,8 +33,8 @@ pub fn FinalisingView(
     base_blocks: Vec<SpecBlock>,
     /// Called when the user wants to go back to drafting.
     on_back: Callback<()>,
-    /// Called when the user confirms submission.
-    on_submit: Callback<()>,
+    /// Called when the user confirms submission, passing `(tree_key, new_id)` pairs.
+    on_submit: Callback<Vec<(String, String)>>,
     /// Whether submission is currently in progress.
     #[prop(into)]
     submitting: Signal<bool>,
@@ -63,6 +63,8 @@ pub fn FinalisingView(
             .iter()
             .all(|(_, sig)| !sig.get().trim().is_empty())
     });
+
+    let provisional_keys: Vec<String> = provisionals.iter().map(|(k, _)| k.clone()).collect();
 
     let changelog = compute_changelog(&base_blocks, &blocks);
 
@@ -189,7 +191,29 @@ pub fn FinalisingView(
                 <button
                     class="button is-success"
                     disabled=move || !all_resolved.get() || submitting.get()
-                    on:click=move |_| on_submit.run(())
+                    on:click={
+                        let provisional_keys = provisional_keys.clone();
+                        move |_| {
+                            let overrides: Vec<(String, String)> = provisional_keys
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, key)| {
+                                    let new_id = id_overrides
+                                        .get()
+                                        .get(i)
+                                        .map(|(_, sig)| sig.get())
+                                        .unwrap_or_default();
+                                    let trimmed = new_id.trim().to_string();
+                                    if trimmed.is_empty() {
+                                        None
+                                    } else {
+                                        Some((key.clone(), trimmed))
+                                    }
+                                })
+                                .collect();
+                            on_submit.run(overrides);
+                        }
+                    }
                 >
                     {move || {
                         if submitting.get() {
