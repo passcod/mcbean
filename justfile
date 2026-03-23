@@ -40,4 +40,4 @@ check: check-ssr check-hydrate
 
 # Set up Tailscale funnel for dev (exposes port 5050)
 funnel:
-    tailscale funnel 5050
+    tailscale funnel http://localhost:5050
