@@ -211,8 +211,8 @@ fn ChangelogRow(
     /// Callback to persist a rule ID rename.
     on_id_change: Callback<(String, String)>,
 ) -> impl IntoView {
-    let expanded = RwSignal::new(false);
     let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
+    let expanded = RwSignal::new(has_diff);
 
     let (kind_class, kind_label) = match entry.kind {
         ChangeKind::Added => ("has-text-success", "Added"),
