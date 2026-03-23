@@ -930,11 +930,47 @@ pub fn ProposalPage() -> impl IntoView {
                                                     .into_any()
                                                 }
                                                 // ── Any other state: read-only ────
+                                                // r[impl lifecycle.in-progress.frozen]
+                                                // r[impl lifecycle.in-progress.amendment]
                                                 Ok(blocks) => {
                                                     let title = sidebar_title.clone();
+                                                    let frozen_status = status.clone();
                                                     let (outline, search_entries) =
                                                         blocks_to_sidebar_data(&blocks, &title);
                                                     view! {
+                                                        {match frozen_status.as_str() {
+                                                            "in_progress" => view! {
+                                                                <div class="notification is-info is-light mb-4">
+                                                                    <p>
+                                                                        <strong>"This proposal is frozen."</strong>
+                                                                        " Implementation pull requests are open against the proposal branch. "
+                                                                        "Editing is disabled until all implementation PRs are resolved."
+                                                                    </p>
+                                                                    <p class="mt-2 is-size-7 has-text-grey">
+                                                                        "Note: committers may amend the spec directly on the branch. "
+                                                                        "Any such amendments will be reflected here once detected."
+                                                                    </p>
+                                                                </div>
+                                                            }.into_any(),
+                                                            "abandoned" => view! {
+                                                                <div class="notification is-danger is-light mb-4">
+                                                                    <p>
+                                                                        <strong>"This proposal was previously abandoned."</strong>
+                                                                        " The backing pull request was closed without merging. "
+                                                                        "The proposal has returned to drafting and can be edited again."
+                                                                    </p>
+                                                                </div>
+                                                            }.into_any(),
+                                                            "merged" => view! {
+                                                                <div class="notification is-success is-light mb-4">
+                                                                    <p>
+                                                                        <strong>"This proposal has been merged."</strong>
+                                                                        " The spec changes are now part of the main branch."
+                                                                    </p>
+                                                                </div>
+                                                            }.into_any(),
+                                                            _ => ().into_any(),
+                                                        }}
                                                         <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
                                                             <SpecSidebar outline=outline search_entries=search_entries />
                                                             <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
