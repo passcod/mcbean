@@ -1,6 +1,10 @@
 export DATABASE_URL := env('DATABASE_URL', 'postgresql://localhost/mcbean')
 export DEV_USER_EMAIL := env('DEV_USER_EMAIL', 'test@test.nz')
 
+# List available commands (default)
+default:
+    @just --list
+
 # Install required dev tools
 setup-tools:
     @command -v cargo-binstall >/dev/null 2>&1 || cargo install cargo-binstall --locked
