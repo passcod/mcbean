@@ -25,6 +25,72 @@ use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind, slugify};
 /// >
 /// > Second paragraph line 1
 /// ```
+/// Split a prose string into one-sentence-per-line form.
+///
+/// Sentences are split at `.`, `!`, or `?` followed by either whitespace and
+/// an uppercase letter/digit, or end of string.  The terminating punctuation
+/// is kept at the end of its line.  Existing hard newlines within a paragraph
+/// are preserved as sentence boundaries.
+fn sentences(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            out.push('\n');
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut start = 0;
+        let mut i = 0;
+        while i < chars.len() {
+            if matches!(chars[i], '.' | '!' | '?') {
+                // Look ahead past any closing punctuation/quotes.
+                let mut j = i + 1;
+                while j < chars.len() && matches!(chars[j], '.' | '!' | '?' | '"' | '\'' | ')') {
+                    j += 1;
+                }
+                // Split if followed by whitespace + uppercase/digit, or end.
+                let is_boundary = if j >= chars.len() {
+                    true
+                } else if chars[j].is_whitespace() {
+                    let k = j + 1;
+                    k >= chars.len() || chars[k].is_uppercase() || chars[k].is_ascii_digit()
+                } else {
+                    false
+                };
+                if is_boundary {
+                    let sentence: String = chars[start..j].iter().collect();
+                    let trimmed = sentence.trim();
+                    if !trimmed.is_empty() {
+                        out.push_str(trimmed);
+                        out.push('\n');
+                    }
+                    // Skip whitespace after the sentence end.
+                    i = j;
+                    while i < chars.len() && chars[i].is_whitespace() {
+                        i += 1;
+                    }
+                    start = i;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        // Remaining text after the last split.
+        let tail: String = chars[start..].iter().collect();
+        let trimmed = tail.trim();
+        if !trimmed.is_empty() {
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+    }
+    // Remove trailing newline; callers add their own.
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 pub fn rule_to_markdown(prefix: &str, rule_id: &str, text: &str) -> String {
     let trimmed = text.trim();
     let mut out = format!("> {prefix}[{rule_id}]\n");
@@ -33,9 +99,9 @@ pub fn rule_to_markdown(prefix: &str, rule_id: &str, text: &str) -> String {
         if i > 0 {
             out.push_str(">\n");
         }
-        for line in para.lines() {
+        for sentence_line in sentences(para).lines() {
             out.push_str("> ");
-            out.push_str(line);
+            out.push_str(sentence_line);
             out.push('\n');
         }
     }
@@ -493,7 +559,7 @@ fn write_markdown_under(tree: &LoroTree, parent: TreeParentId, out: &mut String)
                 let text = get_text_str(&meta);
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
-                    out.push_str(trimmed);
+                    out.push_str(&sentences(trimmed));
                     out.push_str("\n\n");
                 }
             }
