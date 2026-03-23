@@ -16,6 +16,7 @@ pub struct User {
     pub created_at: Timestamp,
     #[diesel(deserialize_as = jiff_diesel::Timestamp, serialize_as = jiff_diesel::Timestamp)]
     pub updated_at: Timestamp,
+    pub profile_pic_url: Option<String>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]
@@ -23,6 +24,7 @@ pub struct User {
 pub struct NewUser {
     pub email: String,
     pub display_name: Option<String>,
+    pub profile_pic_url: Option<String>,
 }
 
 #[derive(Debug, Queryable, Selectable, Serialize)]

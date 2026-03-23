@@ -1,9 +1,14 @@
+use std::collections::HashMap;
+
 use leptos::prelude::*;
 
+use crate::components::avatar::{Avatar, AvatarInfo};
 use crate::components::changelog_sidebar::{
     ChangeKind, ChangelogEntry, compute_changelog, word_diff,
 };
+use crate::components::loro_doc::SERVER_PEER_ID;
 use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind};
+use crate::pages::proposal::get_proposal_contributors;
 
 /// Returns true if the rule ID looks provisional (assigned by next_provisional_id).
 pub fn is_provisional_id(id: &str) -> bool {
@@ -39,6 +44,8 @@ fn rule_id_for_key<'a>(blocks: &'a [SpecBlock], key: &str) -> Option<&'a str> {
 // r[impl ids.persist-overrides]
 #[component]
 pub fn FinalisingView(
+    /// Proposal ID used to load contributor information.
+    proposal_id: i32,
     /// Current proposal blocks (with any edits applied).
     blocks: Vec<SpecBlock>,
     /// Base snapshot blocks for changelog comparison.
@@ -67,6 +74,24 @@ pub fn FinalisingView(
     let has_provisionals = !provisional_keys.is_empty();
 
     let changelog = compute_changelog(&base_blocks, &blocks);
+
+    let contributors_res = Resource::new(move || proposal_id, |pid| get_proposal_contributors(pid));
+
+    // peer_id → AvatarInfo map, built once contributors load.
+    let peer_map: Memo<HashMap<u64, AvatarInfo>> = Memo::new(move |_| {
+        contributors_res
+            .get()
+            .and_then(|r| r.ok())
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|info| {
+                info.peer_ids
+                    .iter()
+                    .map(|&pid| (pid, info.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    });
 
     // Build per-rule editable signals for every rule that appears in the changelog.
     // Provisional rules start empty (user must fill them in); final rules start
@@ -133,7 +158,7 @@ pub fn FinalisingView(
                 ().into_any()
             }}
 
-            // Changelog with inline-editable rule IDs.
+            // Changelog with inline-editable rule IDs and per-change author.
             <h3 class="title is-5 mb-3">"Changes"</h3>
             {if changelog.is_empty() {
                 view! {
@@ -151,12 +176,17 @@ pub fn FinalisingView(
                                     overrides.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)
                                 });
                                 let is_provisional = provisional_keys.contains(&key);
+                                // Derive the author from the block key's embedded peer ID.
+                                let author = Memo::new(move |_| {
+                                    author_for_key(&key, &peer_map.get())
+                                });
                                 view! {
                                     <ChangelogRow
                                         entry=entry
                                         rule_id_signal=override_sig
                                         is_provisional=is_provisional
                                         on_id_change=on_id_change
+                                        author=author
                                     />
                                 }
                             })
@@ -165,6 +195,30 @@ pub fn FinalisingView(
                 }
                 .into_any()
             }}
+
+            // Contributors section.
+            <Suspense fallback=|| ()>
+                {move || Suspend::new(async move {
+                    let contributors = contributors_res.await.unwrap_or_default();
+                    if contributors.is_empty() {
+                        return ().into_any();
+                    }
+                    view! {
+                        <div class="mt-5" style="border-top: 1px solid #e5e7eb; padding-top: 0.75rem;">
+                            <p class="has-text-grey is-size-7 mb-2">
+                                <strong>"Authors"</strong>
+                            </p>
+                            <div style="display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center;">
+                                {contributors
+                                    .into_iter()
+                                    .map(|info| view! { <Avatar info=info size=32 /> })
+                                    .collect::<Vec<_>>()}
+                            </div>
+                        </div>
+                    }
+                    .into_any()
+                })}
+            </Suspense>
 
             // Action buttons.
             <div class="buttons mt-5">
@@ -193,6 +247,17 @@ pub fn FinalisingView(
     }
 }
 
+/// Return the AvatarInfo for the author of a block, derived from the peer ID
+/// embedded in the block key (`"<peer>:<counter>"`).  Returns `None` for blocks
+/// originally created by the server (peer == SERVER_PEER_ID).
+fn author_for_key(key: &str, peer_map: &HashMap<u64, AvatarInfo>) -> Option<AvatarInfo> {
+    let peer_id: u64 = key.split(':').next()?.parse().ok()?;
+    if peer_id == SERVER_PEER_ID {
+        return None;
+    }
+    peer_map.get(&peer_id).cloned()
+}
+
 /// Commit the current value of an override signal via the callback.
 fn commit_id_override(sig: RwSignal<String>, key: &str, on_id_change: Callback<(String, String)>) {
     let trimmed = sig.get_untracked().trim().to_string();
@@ -210,6 +275,8 @@ fn ChangelogRow(
     is_provisional: bool,
     /// Callback to persist a rule ID rename.
     on_id_change: Callback<(String, String)>,
+    /// Author of this change, derived from the block key's embedded peer ID.
+    author: Memo<Option<AvatarInfo>>,
 ) -> impl IntoView {
     let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
     let expanded = RwSignal::new(has_diff);
@@ -290,16 +357,23 @@ fn ChangelogRow(
                     </span>
                     {label_view}
                 </div>
-                {if has_diff {
-                    view! {
-                        <span class="icon is-small has-text-grey">
-                            {move || if expanded.get() { "▼" } else { "▶" }}
-                        </span>
-                    }
-                    .into_any()
-                } else {
-                    ().into_any()
-                }}
+                <div class="is-flex is-align-items-center" style="gap: 0.5rem; flex-shrink: 0;">
+                    {move || {
+                        author.get().map(|info| {
+                            view! { <Avatar info=info size=20 /> }
+                        })
+                    }}
+                    {if has_diff {
+                        view! {
+                            <span class="icon is-small has-text-grey">
+                                {move || if expanded.get() { "▼" } else { "▶" }}
+                            </span>
+                        }
+                        .into_any()
+                    } else {
+                        ().into_any()
+                    }}
+                </div>
             </div>
             <Show when=move || expanded.get()>
                 <div class="mt-3" style="font-size: 0.9rem;">

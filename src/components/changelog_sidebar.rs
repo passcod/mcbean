@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::components::avatar::Avatar;
+use crate::pages::proposal::get_proposal_contributors;
+
 type WordSpans = Vec<(bool, String)>;
 
 use leptos::prelude::*;
@@ -194,6 +197,7 @@ pub fn compute_changelog(initial: &[SpecBlock], current: &[SpecBlock]) -> Vec<Ch
 // r[impl edit.history]
 #[component]
 pub fn ChangelogSidebar(
+    proposal_id: i32,
     initial_blocks: Vec<SpecBlock>,
     blocks: Signal<Vec<SpecBlock>>,
     sync_error: RwSignal<Option<String>>,
@@ -201,6 +205,8 @@ pub fn ChangelogSidebar(
     revert_op: RwSignal<Option<RevertOp>>,
 ) -> impl IntoView {
     let initial_blocks = StoredValue::new(initial_blocks);
+
+    let contributors = Resource::new(move || proposal_id, |pid| get_proposal_contributors(pid));
 
     // r[impl proposal.diff.semantic]
     let entries = Signal::derive(move || {
@@ -452,6 +458,32 @@ pub fn ChangelogSidebar(
                         .into_any()
                     }}
                 </div>
+
+                // Authors strip at the bottom.
+                <Suspense fallback=|| ()>
+                    {move || Suspend::new(async move {
+                        let contributors = contributors.await.unwrap_or_default();
+                        if contributors.is_empty() {
+                            return ().into_any();
+                        }
+                        view! {
+                            <div style="flex-shrink: 0; border-top: 1px solid #e5e7eb; \
+                                        padding: 0.4rem 0.6rem; display: flex; \
+                                        align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                                <span style="font-size: 0.6rem; font-weight: 700; \
+                                             text-transform: uppercase; letter-spacing: 0.05em; \
+                                             color: #9ca3af; margin-right: 0.25rem; flex-shrink: 0;">
+                                    "Authors"
+                                </span>
+                                {contributors
+                                    .into_iter()
+                                    .map(|info| view! { <Avatar info=info size=24 /> })
+                                    .collect::<Vec<_>>()}
+                            </div>
+                        }
+                        .into_any()
+                    })}
+                </Suspense>
             </aside>
         </div>
     }

@@ -68,6 +68,7 @@ diesel::table! {
         display_name -> Nullable<Varchar>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        profile_pic_url -> Nullable<Varchar>,
     }
 }
 

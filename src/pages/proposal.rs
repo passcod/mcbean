@@ -3,6 +3,7 @@ use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
+use crate::components::avatar::AvatarInfo;
 use crate::components::changelog_sidebar::{
     ChangeKind, ChangelogEntry, compute_changelog, word_diff,
 };
@@ -20,6 +21,76 @@ pub struct ProposalDetail {
     pub status: String,
     // r[impl proposal.git.exposure]
     // branch_name deliberately excluded from client-facing DTO
+}
+
+/// Return the distinct contributors to a proposal as avatar info, each carrying
+/// the set of Loro peer IDs they used so callers can attribute block changes.
+#[server]
+pub async fn get_proposal_contributors(proposal_id: i32) -> Result<Vec<AvatarInfo>, ServerFnError> {
+    use std::collections::HashMap;
+
+    use diesel::prelude::*;
+
+    use crate::components::avatar::compute_avatar_url;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    // Fetch (user_id, email, display_name, profile_pic_url, peer_id) rows.
+    let rows: Vec<(i32, String, Option<String>, Option<String>, i64)> = conn
+        .interact(move |conn| {
+            use crate::db::schema::{proposal_loro_updates, users};
+
+            proposal_loro_updates::table
+                .filter(proposal_loro_updates::proposal_id.eq(proposal_id))
+                .inner_join(users::table.on(users::id.eq(proposal_loro_updates::user_id)))
+                .select((
+                    users::id,
+                    users::email,
+                    users::display_name,
+                    users::profile_pic_url,
+                    proposal_loro_updates::peer_id,
+                ))
+                .distinct()
+                .load(conn)
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
+    // Group peer IDs by user.
+    let mut by_user: HashMap<i32, (String, Option<String>, Option<String>, Vec<u64>)> =
+        HashMap::new();
+    for (uid, email, name, pic, peer_id) in rows {
+        let entry = by_user
+            .entry(uid)
+            .or_insert_with(|| (email, name, pic, Vec::new()));
+        let peer_u64 = peer_id as u64;
+        if !entry.3.contains(&peer_u64) {
+            entry.3.push(peer_u64);
+        }
+    }
+
+    let mut contributors: Vec<AvatarInfo> = by_user
+        .into_values()
+        .map(|(email, name, pic, peer_ids)| {
+            let avatar_url = compute_avatar_url(&email, pic.as_deref());
+            AvatarInfo {
+                email,
+                name,
+                avatar_url,
+                peer_ids,
+            }
+        })
+        .collect();
+
+    // Stable ordering by email.
+    contributors.sort_by(|a, b| a.email.cmp(&b.email));
+    Ok(contributors)
 }
 
 #[server]
@@ -1085,6 +1156,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                                         let initial = result.unwrap_or_default();
                                                                         view! {
                                                                             <ChangelogSidebar
+                                                                                proposal_id=p.id
                                                                                 initial_blocks=initial
                                                                                 blocks=Signal::from(blocks_out)
                                                                                 sync_error=sync_error
@@ -1117,6 +1189,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                     });
                                                     view! {
                                                         <FinalisingView
+                                                            proposal_id=p.id
                                                             blocks=blocks
                                                             base_blocks=base
                                                             on_back=Callback::new(move |_| {

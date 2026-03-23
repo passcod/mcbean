@@ -5,12 +5,15 @@ pub struct TailscaleUser {
     // r[impl users.identity]
     pub email: String,
     pub name: Option<String>,
+    pub profile_pic_url: Option<String>,
 }
 
 #[cfg(feature = "ssr")]
 const TAILSCALE_USER_LOGIN: &str = "Tailscale-User-Login";
 #[cfg(feature = "ssr")]
 const TAILSCALE_USER_NAME: &str = "Tailscale-User-Name";
+#[cfg(feature = "ssr")]
+const TAILSCALE_USER_PROFILE_PIC: &str = "Tailscale-User-Profile-Pic";
 #[cfg(feature = "ssr")]
 const DEV_USER_EMAIL_ENV: &str = "DEV_USER_EMAIL";
 
@@ -38,9 +41,19 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for TailscaleUser {
             .headers
             .get(TAILSCALE_USER_NAME)
             .and_then(|v| v.to_str().ok())
-            .map(String::from);
+            .map(|v| rfc2047_decoder::decode(v).unwrap_or_else(|_| v.to_string()));
 
-        Ok(TailscaleUser { email, name })
+        let profile_pic_url = parts
+            .headers
+            .get(TAILSCALE_USER_PROFILE_PIC)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| rfc2047_decoder::decode(v).unwrap_or_else(|_| v.to_string()));
+
+        Ok(TailscaleUser {
+            email,
+            name,
+            profile_pic_url,
+        })
     }
 }
 
@@ -52,7 +65,8 @@ pub async fn get_current_user() -> Result<TailscaleUser, leptos::prelude::Server
 }
 
 /// Look up the current user in the database by email, creating a row if one
-/// does not yet exist. Returns the user's database ID.
+/// does not yet exist, and refreshing profile_pic_url on each visit.
+/// Returns the user's database ID.
 #[cfg(feature = "ssr")]
 pub async fn get_or_create_user_id() -> Result<i32, leptos::prelude::ServerFnError> {
     use diesel::prelude::*;
@@ -76,6 +90,12 @@ pub async fn get_or_create_user_id() -> Result<i32, leptos::prelude::ServerFnErr
             .optional()?;
 
         if let Some(id) = existing {
+            // Refresh profile_pic_url if we have one from headers.
+            if user.profile_pic_url.is_some() {
+                diesel::update(users::table.find(id))
+                    .set(users::profile_pic_url.eq(&user.profile_pic_url))
+                    .execute(conn)?;
+            }
             return Ok(id);
         }
 
@@ -83,6 +103,7 @@ pub async fn get_or_create_user_id() -> Result<i32, leptos::prelude::ServerFnErr
             .values((
                 users::email.eq(&user.email),
                 users::display_name.eq(user.name.as_deref()),
+                users::profile_pic_url.eq(user.profile_pic_url.as_deref()),
             ))
             .returning(users::id)
             .get_result::<i32>(conn)
