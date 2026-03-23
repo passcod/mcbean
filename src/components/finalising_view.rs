@@ -114,7 +114,7 @@ pub fn FinalisingView(
                                                 <tr>
                                                     <td>
                                                         <code class="has-text-warning-dark">
-                                                            {format!("r[{}]", old_id)}
+                                                            {old_id}
                                                         </code>
                                                     </td>
                                                     <td>
