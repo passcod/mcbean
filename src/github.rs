@@ -471,6 +471,37 @@ impl GitHubClient {
         Ok(())
     }
 
+    /// Force-update an existing branch to point at `sha`.
+    // r[impl lifecycle.submitted.resubmit]
+    #[instrument(skip(self), fields(owner, repo, branch_name))]
+    pub async fn force_update_branch(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch_name: &str,
+        sha: &str,
+    ) -> Result<(), GitHubError> {
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/git/refs/heads/{branch_name}");
+        let body = UpdateRefRequest { sha, force: true };
+        debug!(%url, %branch_name, %sha, "force-updating branch");
+
+        let resp = self
+            .apply_auth(self.client.patch(&url))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(())
+    }
+
     /// Commit a set of files on top of `parent_sha` and update `branch_name`
     /// to point at the new commit.
     #[instrument(skip(self, files), fields(owner, repo, branch_name, file_count = files.len()))]
@@ -681,6 +712,56 @@ impl GitHubClient {
         }
 
         info!(pr_number, "converted PR to draft with comment");
+        Ok(())
+    }
+
+    /// Mark a draft pull request as ready for review using the GraphQL API.
+    // r[impl lifecycle.submitted.resubmit]
+    #[instrument(skip(self), fields(owner, repo, pr_number))]
+    pub async fn mark_pr_ready_for_review(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<(), GitHubError> {
+        let pr_url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
+        let resp = self.apply_auth(self.client.get(&pr_url)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        #[derive(Deserialize)]
+        struct PrNodeId {
+            node_id: String,
+        }
+        let pr_data: PrNodeId = resp.json().await?;
+
+        let graphql_url = format!("{GITHUB_API_BASE}/graphql");
+        let query = "mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } } }";
+        let gql_body = serde_json::json!({
+            "query": query,
+            "variables": { "id": pr_data.node_id }
+        });
+        let resp = self
+            .apply_auth(self.client.post(&graphql_url))
+            .json(&gql_body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        info!(pr_number, "marked PR as ready for review");
         Ok(())
     }
 

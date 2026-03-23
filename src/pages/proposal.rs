@@ -338,6 +338,7 @@ pub async fn submit_proposal(
     let (
         branch_name,
         title,
+        existing_pr_number,
         repo_owner,
         repo_name,
         default_branch,
@@ -351,16 +352,22 @@ pub async fn submit_proposal(
                 proposal_loro_updates, proposals, repositories, spec_snapshots,
             };
 
-            let (branch_name, title, status, repo_id): (String, Option<String>, String, i32) =
-                proposals::table
-                    .find(proposal_id)
-                    .select((
-                        proposals::branch_name,
-                        proposals::title,
-                        proposals::status,
-                        proposals::repository_id,
-                    ))
-                    .first(conn)?;
+            let (branch_name, title, status, pr_number, repo_id): (
+                String,
+                Option<String>,
+                String,
+                Option<i32>,
+                i32,
+            ) = proposals::table
+                .find(proposal_id)
+                .select((
+                    proposals::branch_name,
+                    proposals::title,
+                    proposals::status,
+                    proposals::pr_number,
+                    proposals::repository_id,
+                ))
+                .first(conn)?;
 
             if status != "finalising" {
                 return Err(diesel::result::Error::QueryBuilderError(
@@ -399,6 +406,7 @@ pub async fn submit_proposal(
             Ok((
                 branch_name,
                 title,
+                pr_number,
                 repo_owner,
                 repo_name,
                 default_branch,
@@ -435,16 +443,24 @@ pub async fn submit_proposal(
         .map(|(path, content)| FileToCommit { path, content })
         .collect();
 
-    // Create branch from default branch HEAD.
     let head_sha = github
         .get_branch_head_sha(&repo_owner, &repo_name, &default_branch)
         .await
         .map_err(|e| ServerFnError::new(format!("get HEAD: {e}")))?;
 
-    github
-        .create_branch(&repo_owner, &repo_name, &branch_name, &head_sha)
-        .await
-        .map_err(|e| ServerFnError::new(format!("create branch: {e}")))?;
+    // r[impl lifecycle.submitted.resubmit]
+    let is_resubmit = existing_pr_number.is_some();
+    if is_resubmit {
+        github
+            .force_update_branch(&repo_owner, &repo_name, &branch_name, &head_sha)
+            .await
+            .map_err(|e| ServerFnError::new(format!("force-update branch: {e}")))?;
+    } else {
+        github
+            .create_branch(&repo_owner, &repo_name, &branch_name, &head_sha)
+            .await
+            .map_err(|e| ServerFnError::new(format!("create branch: {e}")))?;
+    }
 
     // Commit spec files.
     let pr_title = title
@@ -464,18 +480,27 @@ pub async fn submit_proposal(
         .await
         .map_err(|e| ServerFnError::new(format!("commit files: {e}")))?;
 
-    // Open PR.
-    let pr_number = github
-        .create_pull_request(
-            &repo_owner,
-            &repo_name,
-            &pr_title,
-            &branch_name,
-            &default_branch,
-            None,
-        )
-        .await
-        .map_err(|e| ServerFnError::new(format!("create PR: {e}")))?;
+    // r[impl lifecycle.submitted.resubmit]
+    let pr_number = if let Some(existing_pr) = existing_pr_number {
+        let pr_num = existing_pr as i64;
+        github
+            .mark_pr_ready_for_review(&repo_owner, &repo_name, pr_num)
+            .await
+            .map_err(|e| ServerFnError::new(format!("mark PR ready: {e}")))?;
+        pr_num
+    } else {
+        github
+            .create_pull_request(
+                &repo_owner,
+                &repo_name,
+                &pr_title,
+                &branch_name,
+                &default_branch,
+                None,
+            )
+            .await
+            .map_err(|e| ServerFnError::new(format!("create PR: {e}")))?
+    };
 
     // Update proposal status and store PR number.
     let conn = pool
@@ -498,8 +523,13 @@ pub async fn submit_proposal(
 
     // r[impl notify.slack]
     if let Some(ref url) = slack_url {
+        let label = if is_resubmit {
+            "resubmitted"
+        } else {
+            "submitted"
+        };
         let text = format!(
-            "New spec proposal submitted: *{}* (PR #{pr_number})",
+            "Spec proposal {label}: *{}* (PR #{pr_number})",
             title
                 .as_deref()
                 .unwrap_or(&format!("Proposal #{proposal_id}"))

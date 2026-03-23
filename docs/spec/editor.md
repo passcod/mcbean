@@ -219,6 +219,10 @@ When the user confirms submission from the Finalising state, the proposal transi
 In this state, McBean MUST create a branch in the backing repository containing the spec changes, and open a pull request from that branch.
 If a Slack webhook is configured for the repository, a notification MUST be sent per r[notify.slack].
 
+r[lifecycle.submitted.resubmit]
+When a proposal that was previously submitted and reopened per r[lifecycle.submitted.reopen] is submitted again, McBean MUST update the existing branch and pull request rather than attempting to create new ones.
+The branch MUST be force-updated to reflect the latest spec changes, and the pull request MUST be converted from draft back to ready-for-review.
+
 r[lifecycle.submitted.reopen]
 While a submitted proposal has no open implementation pull requests targeting its branch, the user MAY transition it back to the Drafting state.
 Doing so MUST convert the backing pull request to draft status and add an editorial note indicating that the proposal has been reopened for editing.
