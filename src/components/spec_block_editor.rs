@@ -417,11 +417,17 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                 let rest = &content[start..];
                 let end = rest.find("\n\n").unwrap_or(rest.len());
                 let text = join_hard_wraps(rest[..end].trim());
-                if text.is_empty() || text.starts_with("r[") {
+                let looks_like_req = text.bytes().take_while(|b| b.is_ascii_lowercase()).count()
+                    > 0
+                    && text
+                        .as_bytes()
+                        .get(text.bytes().take_while(|b| b.is_ascii_lowercase()).count())
+                        == Some(&b'[');
+                if text.is_empty() || looks_like_req {
                     #[cfg(feature = "ssr")]
                     tracing::debug!(
                         seq,
-                        "parse_blocks_from_content: paragraph skipped (empty or r[)"
+                        "parse_blocks_from_content: paragraph skipped (empty or req marker)"
                     );
                     continue;
                 }
