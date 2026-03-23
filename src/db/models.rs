@@ -115,8 +115,6 @@ pub struct Proposal {
     pub updated_at: Timestamp,
     pub base_snapshot_id: Option<i32>,
     pub pr_number: Option<i32>,
-    // r[impl ids.persist-overrides]
-    pub id_overrides: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Insertable, Deserialize)]

@@ -34,14 +34,14 @@ pub fn FinalisingView(
     base_blocks: Vec<SpecBlock>,
     /// Called when the user wants to go back to drafting.
     on_back: Callback<()>,
-    /// Called when the user confirms submission, passing `(tree_key, new_id)` pairs.
-    on_submit: Callback<Vec<(String, String)>>,
-    /// Previously saved ID override assignments, restored from the server.
-    #[prop(default = Vec::new())]
-    initial_overrides: Vec<(String, String)>,
-    /// Called whenever an ID override value changes, for persistence.
-    #[prop(optional)]
-    on_override_change: Option<Callback<Vec<(String, String)>>>,
+    /// Called when the user confirms submission. ID renames have already been
+    /// persisted as Loro CRDT operations via `on_id_change`.
+    on_submit: Callback<()>,
+    /// Called when the user changes a provisional rule ID. The tuple is
+    /// `(tree_key, new_id)`. The parent is responsible for dispatching this
+    /// to the `set_rule_id` server function so the rename is recorded as a
+    /// Loro CRDT operation.
+    on_id_change: Callback<(String, String)>,
     /// Whether submission is currently in progress.
     #[prop(into)]
     submitting: Signal<bool>,
@@ -52,31 +52,14 @@ pub fn FinalisingView(
     let provisionals = provisional_rules(&blocks);
     let has_provisionals = !provisionals.is_empty();
 
-    // Build a lookup from the saved overrides so we can pre-populate inputs.
-    let saved: std::collections::HashMap<String, String> = initial_overrides.into_iter().collect();
-
-    // Editable ID overrides: key -> new slug. Pre-populated from saved overrides.
+    // Editable ID overrides: key -> new slug typed by the user.
+    // Starts empty — the inputs are blank for rules that still need assignment.
     let id_overrides: RwSignal<Vec<(String, RwSignal<String>)>> = RwSignal::new(
         provisionals
             .iter()
-            .map(|(key, _old_id)| {
-                let initial = saved.get(key).cloned().unwrap_or_default();
-                (key.clone(), RwSignal::new(initial))
-            })
+            .map(|(key, _old_id)| (key.clone(), RwSignal::new(String::new())))
             .collect(),
     );
-
-    // Collect the current override snapshot and fire the change callback.
-    let notify_change = move || {
-        if let Some(cb) = on_override_change {
-            let snapshot: Vec<(String, String)> = id_overrides
-                .get()
-                .iter()
-                .map(|(key, sig)| (key.clone(), sig.get()))
-                .collect();
-            cb.run(snapshot);
-        }
-    };
 
     // Check whether all provisionals have been given a non-empty replacement.
     let all_resolved = Memo::new(move |_| {
@@ -88,8 +71,6 @@ pub fn FinalisingView(
             .iter()
             .all(|(_, sig)| !sig.get().trim().is_empty())
     });
-
-    let provisional_keys: Vec<String> = provisionals.iter().map(|(k, _)| k.clone()).collect();
 
     let changelog = compute_changelog(&base_blocks, &blocks);
 
@@ -134,7 +115,7 @@ pub fn FinalisingView(
                                         .enumerate()
                                         .map(|(i, (key, old_id))| {
                                             let old_id = old_id.clone();
-                                            let _key = key.clone();
+                                            let key = key.clone();
                                             view! {
                                                 <tr>
                                                     <td>
@@ -154,15 +135,21 @@ pub fn FinalisingView(
                                                                     .map(|(_, s)| s.get())
                                                                     .unwrap_or_default()
                                                             }
-                                                            on:input=move |ev| {
+                                                            on:input={
+                                                                let key = key.clone();
+                                                                move |ev| {
                                                                     let val = event_target_value(&ev);
                                                                     if let Some((_, sig)) =
                                                                         overrides.get().get(i)
                                                                     {
-                                                                        sig.set(val);
+                                                                        sig.set(val.clone());
                                                                     }
-                                                                    notify_change();
+                                                                    let trimmed = val.trim().to_string();
+                                                                    if !trimmed.is_empty() {
+                                                                        on_id_change.run((key.clone(), trimmed));
+                                                                    }
                                                                 }
+                                                            }
                                                         />
                                                     </td>
                                                 </tr>
@@ -217,29 +204,7 @@ pub fn FinalisingView(
                 <button
                     class="button is-success"
                     disabled=move || !all_resolved.get() || submitting.get()
-                    on:click={
-                        let provisional_keys = provisional_keys.clone();
-                        move |_| {
-                            let overrides: Vec<(String, String)> = provisional_keys
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, key)| {
-                                    let new_id = id_overrides
-                                        .get()
-                                        .get(i)
-                                        .map(|(_, sig)| sig.get())
-                                        .unwrap_or_default();
-                                    let trimmed = new_id.trim().to_string();
-                                    if trimmed.is_empty() {
-                                        None
-                                    } else {
-                                        Some((key.clone(), trimmed))
-                                    }
-                                })
-                                .collect();
-                            on_submit.run(overrides);
-                        }
-                    }
+                    on:click=move |_| on_submit.run(())
                 >
                     {move || {
                         if submitting.get() {
@@ -256,97 +221,82 @@ pub fn FinalisingView(
 
 #[component]
 fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
-    let expanded = RwSignal::new(false);
-    let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
+    let kind_class = match entry.kind {
+        ChangeKind::Added => "has-text-success",
+        ChangeKind::Deleted => "has-text-danger",
+        ChangeKind::Modified | ChangeKind::VersionBump => "has-text-warning-dark",
+        ChangeKind::Reordered => "has-text-info",
+    };
+    let kind_label = match &entry.kind {
+        ChangeKind::Added => "Added".to_string(),
+        ChangeKind::Deleted => "Deleted".to_string(),
+        ChangeKind::Modified => "Modified".to_string(),
+        ChangeKind::Reordered => "Reordered".to_string(),
+        ChangeKind::VersionBump => "Version bump".to_string(),
+    };
+    let label = entry.label.clone();
 
-    let (kind_class, kind_label) = match entry.kind {
-        ChangeKind::Added => ("has-text-success", "Added"),
-        ChangeKind::Deleted => ("has-text-danger", "Deleted"),
-        ChangeKind::Modified => ("has-text-info", "Modified"),
-        ChangeKind::Reordered => ("has-text-grey", "Reordered"),
-        ChangeKind::VersionBump => ("has-text-grey-light", "Version bump"),
+    // Word-level diff for modified blocks.
+    let diff_view = match entry.kind {
+        ChangeKind::Modified => {
+            if let (Some(old), Some(new)) = (&entry.old_text, &entry.new_text) {
+                let (old_spans, new_spans) = word_diff(old, new);
+                Some(view! {
+                    <div class="mt-2" style="font-size: 0.85em;">
+                        <div class="mb-1">
+                            <span class="has-text-weight-semibold has-text-danger-dark">"- "</span>
+                            {old_spans
+                                .into_iter()
+                                .map(|(is_common, word)| {
+                                    if is_common {
+                                        view! { <span>{word}</span> }.into_any()
+                                    } else {
+                                        view! {
+                                            <span
+                                                style="background-color: #fdd; text-decoration: line-through;"
+                                            >
+                                                {word}
+                                            </span>
+                                        }
+                                        .into_any()
+                                    }
+                                })
+                                .collect::<Vec<_>>()}
+                        </div>
+                        <div>
+                            <span class="has-text-weight-semibold has-text-success-dark">"+ "</span>
+                            {new_spans
+                                .into_iter()
+                                .map(|(is_common, word)| {
+                                    if is_common {
+                                        view! { <span>{word}</span> }.into_any()
+                                    } else {
+                                        view! {
+                                            <span style="background-color: #dfd;">
+                                                {word}
+                                            </span>
+                                        }
+                                        .into_any()
+                                    }
+                                })
+                                .collect::<Vec<_>>()}
+                        </div>
+                    </div>
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
     };
 
-    let old = entry.old_text.clone();
-    let new = entry.new_text.clone();
-
     view! {
-        <div
-            class="box py-3 px-4 mb-2"
-            style="cursor: pointer;"
-            on:click=move |_| {
-                if has_diff {
-                    expanded.update(|v| *v = !*v);
-                }
-            }
-        >
-            <div class="is-flex is-align-items-center is-justify-content-space-between">
-                <div>
-                    <span class=kind_class style="font-weight: 600; margin-right: 0.5rem;">
-                        {kind_label}
-                    </span>
-                    <span>{entry.label.clone()}</span>
-                </div>
-                {if has_diff {
-                    view! {
-                        <span class="icon is-small has-text-grey">
-                            {move || if expanded.get() { "▼" } else { "▶" }}
-                        </span>
-                    }
-                    .into_any()
-                } else {
-                    ().into_any()
-                }}
+        <div class="mb-3 p-3" style="border-left: 3px solid #dbdbdb; background: #fafafa;">
+            <div class="is-flex is-align-items-center">
+                <span class={format!("tag is-light mr-2 {kind_class}")}>{kind_label}</span>
+                <span class="has-text-weight-medium">{label}</span>
             </div>
-            <Show when=move || expanded.get()>
-                <div class="mt-3" style="font-size: 0.9rem;">
-                    {match (&old, &new) {
-                        (Some(o), Some(n)) => {
-                            let (_old_spans, new_spans) = word_diff(o, n);
-                            view! {
-                                <div
-                                    class="content"
-                                    style="background: #f5f5f5; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap;"
-                                >
-                                    {new_spans
-                                        .into_iter()
-                                        .map(|(is_common, text)| {
-                                            if !is_common {
-                                                view! {
-                                                    <span style="background: #fde68a; padding: 0 2px;">
-                                                        {text}
-                                                    </span>
-                                                }
-                                                .into_any()
-                                            } else {
-                                                view! { <span>{text}" "</span> }.into_any()
-                                            }
-                                        })
-                                        .collect::<Vec<_>>()}
-                                </div>
-                            }
-                            .into_any()
-                        }
-                        (None, Some(n)) => {
-                            view! {
-                                <div style="background: #ecfdf5; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap;">
-                                    {n.clone()}
-                                </div>
-                            }
-                            .into_any()
-                        }
-                        (Some(o), None) => {
-                            view! {
-                                <div style="background: #fef2f2; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap; text-decoration: line-through;">
-                                    {o.clone()}
-                                </div>
-                            }
-                            .into_any()
-                        }
-                        _ => ().into_any(),
-                    }}
-                </div>
-            </Show>
+            {diff_view}
         </div>
     }
 }
@@ -354,17 +304,16 @@ fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::spec_block_editor::html_escape;
 
     fn rule_block(key: &str, id: &str, text: &str) -> SpecBlock {
         SpecBlock {
             key: key.to_string(),
             kind: SpecBlockKind::Rule {
                 prefix: "r".to_string(),
-                id: id.to_string(),
-                text: text.to_string(),
+                id: id.into(),
+                text: text.into(),
             },
-            html: format!("<p>{}</p>", html_escape(text)),
+            html: format!("<p>{text}</p>"),
         }
     }
 
@@ -373,10 +322,10 @@ mod tests {
             key: key.to_string(),
             kind: SpecBlockKind::Heading {
                 level,
-                text: text.to_string(),
+                text: text.into(),
                 anchor: text.to_lowercase().replace(' ', "-"),
             },
-            html: format!("<h{level}>{}</h{level}>", html_escape(text)),
+            html: format!("<h{level}>{text}</h{level}>"),
         }
     }
 

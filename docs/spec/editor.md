@@ -84,8 +84,9 @@ After the LLM pass of finalisation, McBean MUST present the full set of proposed
 The user MUST be able to approve, reject, or override any individual ID change.
 
 r[ids.persist-overrides]
-ID assignments entered during the finalisation phase MUST be persisted to the server so that they survive page reloads and tab closures.
-When the user returns to a proposal in the Finalising state, previously saved assignments MUST be restored into the input fields.
+ID assignments entered during the finalisation phase MUST be recorded as Loro CRDT operations on the proposal document, so that they are merged consistently when multiple users assign IDs concurrently.
+Because the renames are written directly to the document, they survive page reloads and tab closures without a separate storage mechanism.
+When the user returns to a proposal in the Finalising state, rules whose IDs have already been assigned MUST no longer appear as provisional.
 
 r[ids.no-collisions]
 Rule ID slugs MUST be unique within a spec.

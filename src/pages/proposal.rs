@@ -233,70 +233,6 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
-/// Save ID override assignments for a proposal in the finalising state.
-// r[impl ids.persist-overrides]
-#[server]
-pub async fn save_id_overrides(
-    proposal_id: i32,
-    overrides: Vec<(String, String)>,
-) -> Result<(), ServerFnError> {
-    use diesel::prelude::*;
-
-    let pool =
-        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-
-    let json_val = serde_json::to_value(&overrides)
-        .map_err(|e| ServerFnError::new(format!("serialize overrides: {e}")))?;
-
-    conn.interact(move |conn| {
-        use crate::db::schema::proposals;
-        diesel::update(proposals::table.find(proposal_id))
-            .set(proposals::id_overrides.eq(Some(json_val)))
-            .execute(conn)
-    })
-    .await
-    .map_err(|e| ServerFnError::new(format!("{e}")))?
-    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
-
-    Ok(())
-}
-
-/// Load previously saved ID override assignments for a proposal.
-// r[impl ids.persist-overrides]
-#[server]
-pub async fn get_id_overrides(proposal_id: i32) -> Result<Vec<(String, String)>, ServerFnError> {
-    use diesel::prelude::*;
-
-    let pool =
-        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?;
-
-    let json_val: Option<serde_json::Value> = conn
-        .interact(move |conn| {
-            use crate::db::schema::proposals;
-            proposals::table
-                .find(proposal_id)
-                .select(proposals::id_overrides)
-                .first(conn)
-        })
-        .await
-        .map_err(|e| ServerFnError::new(format!("{e}")))?
-        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
-
-    match json_val {
-        Some(v) => serde_json::from_value(v)
-            .map_err(|e| ServerFnError::new(format!("deserialize overrides: {e}"))),
-        None => Ok(Vec::new()),
-    }
-}
-
 // r[impl lifecycle.finalising]
 #[server]
 pub async fn finalise_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
@@ -372,19 +308,104 @@ pub async fn unfinalise_proposal(proposal_id: i32) -> Result<(), ServerFnError> 
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
+/// Rename a single rule ID in the Loro doc and persist the change as a CRDT update.
+// r[impl ids.persist-overrides]
+#[server]
+pub async fn set_rule_id(
+    proposal_id: i32,
+    tree_key: String,
+    new_id: String,
+) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+    use loro::ExportMode;
+
+    use crate::auth::get_or_create_user_id;
+    use crate::components::loro_doc::{reconstruct_doc, rename_rule_ids};
+
+    let user_id = get_or_create_user_id().await?;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let (base_bytes, update_rows) = conn
+        .interact(move |conn| {
+            use crate::components::spec_block_editor::resolve_base_snapshot_id;
+            use crate::db::schema::{proposal_loro_updates, spec_snapshots};
+
+            let sid = resolve_base_snapshot_id(proposal_id, conn)?;
+
+            let base_bytes: Vec<u8> = spec_snapshots::table
+                .find(sid)
+                .select(spec_snapshots::loro_bytes)
+                .first(conn)?;
+
+            let update_rows: Vec<Vec<u8>> = proposal_loro_updates::table
+                .filter(proposal_loro_updates::proposal_id.eq(proposal_id))
+                .order(proposal_loro_updates::id.asc())
+                .select(proposal_loro_updates::update_bytes)
+                .load(conn)?;
+
+            Ok::<_, diesel::result::Error>((base_bytes, update_rows))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
+    let doc = reconstruct_doc(&base_bytes, &update_rows)
+        .map_err(|e| ServerFnError::new(format!("reconstruct: {e}")))?;
+
+    // Snapshot the version vector before the rename so we can export just the delta.
+    let vv_before = doc.oplog_vv();
+
+    rename_rule_ids(&doc, &[(tree_key, new_id)])
+        .map_err(|e| ServerFnError::new(format!("rename rule ID: {e}")))?;
+
+    let delta = doc
+        .export(ExportMode::updates(&vv_before))
+        .map_err(|e| ServerFnError::new(format!("export delta: {e}")))?;
+
+    if delta.is_empty() {
+        return Ok(());
+    }
+
+    let peer_id_i64 = doc.peer_id() as i64;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+    conn.interact(move |conn| {
+        use crate::db::schema::proposal_loro_updates;
+        diesel::insert_into(proposal_loro_updates::table)
+            .values((
+                proposal_loro_updates::proposal_id.eq(proposal_id),
+                proposal_loro_updates::user_id.eq(user_id),
+                proposal_loro_updates::peer_id.eq(peer_id_i64),
+                proposal_loro_updates::update_bytes.eq(&delta),
+            ))
+            .execute(conn)
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("insert: {e}")))?;
+
+    Ok(())
+}
+
 /// Submit the proposal: create a branch, commit spec files, open a PR, send Slack.
 // r[impl lifecycle.submitted]
 // r[impl proposal.submit]
 // r[impl ids.finalise-phase]
 #[server]
-pub async fn submit_proposal(
-    proposal_id: i32,
-    id_overrides: Vec<(String, String)>,
-) -> Result<(), ServerFnError> {
+pub async fn submit_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
     use diesel::prelude::*;
 
     use crate::components::loro_doc::{
-        doc_to_markdown_files, has_provisional_ids, reconstruct_doc, rename_rule_ids,
+        doc_to_markdown_files, has_provisional_ids, reconstruct_doc,
     };
     use crate::github::FileToCommit;
 
@@ -483,13 +504,10 @@ pub async fn submit_proposal(
         .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
         .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
 
-    // Reconstruct the Loro doc, apply ID renames, and export to markdown files.
+    // Reconstruct the Loro doc and export to markdown files.
+    // ID renames have already been applied as Loro CRDT operations via set_rule_id.
     let doc = reconstruct_doc(&base_bytes, &update_rows)
         .map_err(|e| ServerFnError::new(format!("reconstruct: {e}")))?;
-
-    // r[impl lifecycle.finalising.ids]
-    rename_rule_ids(&doc, &id_overrides)
-        .map_err(|e| ServerFnError::new(format!("rename rule IDs: {e}")))?;
 
     if has_provisional_ids(&doc) {
         return Err(ServerFnError::new(
@@ -578,7 +596,6 @@ pub async fn submit_proposal(
             .set((
                 proposals::status.eq("submitted"),
                 proposals::pr_number.eq(Some(pr_num_i32)),
-                proposals::id_overrides.eq(None::<serde_json::Value>),
             ))
             .execute(conn)
     })
@@ -703,11 +720,6 @@ pub fn ProposalPage() -> impl IntoView {
     );
     let blocks_resource = Resource::new(proposal_id, get_proposal_blocks);
     let base_blocks_resource = Resource::new(proposal_id, get_base_blocks);
-    // r[impl ids.persist-overrides]
-    let id_overrides_resource = Resource::new(
-        move || (proposal_id(), refetch_version.get()),
-        |(pid, _)| get_id_overrides(pid),
-    );
 
     let editing_title = RwSignal::new(false);
     let title_draft = RwSignal::new(String::new());
@@ -731,17 +743,17 @@ pub fn ProposalPage() -> impl IntoView {
     });
 
     // r[impl ids.persist-overrides]
-    let save_overrides_action = Action::new(move |overrides: &Vec<(String, String)>| {
+    let set_rule_id_action = Action::new(move |(tree_key, new_id): &(String, String)| {
         let pid = proposal_id();
-        let overrides = overrides.clone();
-        async move { save_id_overrides(pid, overrides).await }
+        let tree_key = tree_key.clone();
+        let new_id = new_id.clone();
+        async move { set_rule_id(pid, tree_key, new_id).await }
     });
 
     // Finalising -> Submitted
-    let submit_action = Action::new(move |overrides: &Vec<(String, String)>| {
+    let submit_action = Action::new(move |_: &()| {
         let pid = proposal_id();
-        let overrides = overrides.clone();
-        async move { submit_proposal(pid, overrides).await }
+        async move { submit_proposal(pid).await }
     });
 
     // Submitted -> Drafting
@@ -978,10 +990,6 @@ pub fn ProposalPage() -> impl IntoView {
                                                     let submitting_signal = Signal::derive(move || {
                                                         submit_action.pending().get()
                                                     });
-                                                    let saved_overrides = id_overrides_resource
-                                                        .get()
-                                                        .and_then(|r| r.ok())
-                                                        .unwrap_or_default();
                                                     view! {
                                                         <FinalisingView
                                                             blocks=blocks
@@ -989,12 +997,11 @@ pub fn ProposalPage() -> impl IntoView {
                                                             on_back=Callback::new(move |_| {
                                                                 unfinalise_action.dispatch(());
                                                             })
-                                                            on_submit=Callback::new(move |overrides: Vec<(String, String)>| {
-                                                                submit_action.dispatch(overrides);
+                                                            on_submit=Callback::new(move |_| {
+                                                                submit_action.dispatch(());
                                                             })
-                                                            initial_overrides=saved_overrides
-                                                            on_override_change=Callback::new(move |overrides: Vec<(String, String)>| {
-                                                                save_overrides_action.dispatch(overrides);
+                                                            on_id_change=Callback::new(move |pair: (String, String)| {
+                                                                set_rule_id_action.dispatch(pair);
                                                             })
                                                             submitting=submitting_signal
                                                             submit_error=submit_err_signal
