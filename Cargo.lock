@@ -1503,6 +1503,7 @@ dependencies = [
  "downcast-rs",
  "itoa",
  "pq-sys",
+ "serde_json",
 ]
 
 [[package]]

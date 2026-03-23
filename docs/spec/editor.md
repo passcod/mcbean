@@ -84,6 +84,10 @@ After finalisation, McBean MUST present the full set of proposed ID assignments 
 The user MUST be able to approve, reject, or override any individual ID change.
 Feedback provided during this review MUST be passed back to the LLM for a revised pass if any changes are rejected.
 
+r[ids.persist-overrides]
+ID assignments entered during the finalisation phase MUST be persisted to the server so that they survive page reloads and tab closures.
+When the user returns to a proposal in the Finalising state, previously saved assignments MUST be restored into the input fields.
+
 r[ids.no-collisions]
 Rule ID slugs MUST be unique within a spec.
 Collisions MUST NOT be resolved by appending numeric suffixes.

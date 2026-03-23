@@ -24,6 +24,7 @@ diesel::table! {
         updated_at -> Timestamptz,
         base_snapshot_id -> Nullable<Int4>,
         pr_number -> Nullable<Int4>,
+        id_overrides -> Nullable<Jsonb>,
     }
 }
 

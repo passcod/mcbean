@@ -233,6 +233,70 @@ pub async fn update_proposal_title(proposal_id: i32, title: String) -> Result<()
     .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))
 }
 
+/// Save ID override assignments for a proposal in the finalising state.
+// r[impl ids.persist-overrides]
+#[server]
+pub async fn save_id_overrides(
+    proposal_id: i32,
+    overrides: Vec<(String, String)>,
+) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let json_val = serde_json::to_value(&overrides)
+        .map_err(|e| ServerFnError::new(format!("serialize overrides: {e}")))?;
+
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+        diesel::update(proposals::table.find(proposal_id))
+            .set(proposals::id_overrides.eq(Some(json_val)))
+            .execute(conn)
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("{e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
+
+    Ok(())
+}
+
+/// Load previously saved ID override assignments for a proposal.
+// r[impl ids.persist-overrides]
+#[server]
+pub async fn get_id_overrides(proposal_id: i32) -> Result<Vec<(String, String)>, ServerFnError> {
+    use diesel::prelude::*;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let json_val: Option<serde_json::Value> = conn
+        .interact(move |conn| {
+            use crate::db::schema::proposals;
+            proposals::table
+                .find(proposal_id)
+                .select(proposals::id_overrides)
+                .first(conn)
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
+
+    match json_val {
+        Some(v) => serde_json::from_value(v)
+            .map_err(|e| ServerFnError::new(format!("deserialize overrides: {e}"))),
+        None => Ok(Vec::new()),
+    }
+}
+
 // r[impl lifecycle.finalising]
 #[server]
 pub async fn finalise_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
@@ -514,6 +578,7 @@ pub async fn submit_proposal(
             .set((
                 proposals::status.eq("submitted"),
                 proposals::pr_number.eq(Some(pr_num_i32)),
+                proposals::id_overrides.eq(None::<serde_json::Value>),
             ))
             .execute(conn)
     })
@@ -638,6 +703,11 @@ pub fn ProposalPage() -> impl IntoView {
     );
     let blocks_resource = Resource::new(proposal_id, get_proposal_blocks);
     let base_blocks_resource = Resource::new(proposal_id, get_base_blocks);
+    // r[impl ids.persist-overrides]
+    let id_overrides_resource = Resource::new(
+        move || (proposal_id(), refetch_version.get()),
+        |(pid, _)| get_id_overrides(pid),
+    );
 
     let editing_title = RwSignal::new(false);
     let title_draft = RwSignal::new(String::new());
@@ -658,6 +728,13 @@ pub fn ProposalPage() -> impl IntoView {
     let unfinalise_action = Action::new(move |_: &()| {
         let pid = proposal_id();
         async move { unfinalise_proposal(pid).await }
+    });
+
+    // r[impl ids.persist-overrides]
+    let save_overrides_action = Action::new(move |overrides: &Vec<(String, String)>| {
+        let pid = proposal_id();
+        let overrides = overrides.clone();
+        async move { save_id_overrides(pid, overrides).await }
     });
 
     // Finalising -> Submitted
@@ -901,6 +978,10 @@ pub fn ProposalPage() -> impl IntoView {
                                                     let submitting_signal = Signal::derive(move || {
                                                         submit_action.pending().get()
                                                     });
+                                                    let saved_overrides = id_overrides_resource
+                                                        .get()
+                                                        .and_then(|r| r.ok())
+                                                        .unwrap_or_default();
                                                     view! {
                                                         <FinalisingView
                                                             blocks=blocks
@@ -910,6 +991,10 @@ pub fn ProposalPage() -> impl IntoView {
                                                             })
                                                             on_submit=Callback::new(move |overrides: Vec<(String, String)>| {
                                                                 submit_action.dispatch(overrides);
+                                                            })
+                                                            initial_overrides=saved_overrides
+                                                            on_override_change=Callback::new(move |overrides: Vec<(String, String)>| {
+                                                                save_overrides_action.dispatch(overrides);
                                                             })
                                                             submitting=submitting_signal
                                                             submit_error=submit_err_signal

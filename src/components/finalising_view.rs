@@ -25,6 +25,7 @@ fn provisional_rules(blocks: &[SpecBlock]) -> Vec<(String, String)> {
 
 // r[impl lifecycle.finalising]
 // r[impl lifecycle.finalising.ids]
+// r[impl ids.persist-overrides]
 #[component]
 pub fn FinalisingView(
     /// Current proposal blocks (with any edits applied).
@@ -35,6 +36,12 @@ pub fn FinalisingView(
     on_back: Callback<()>,
     /// Called when the user confirms submission, passing `(tree_key, new_id)` pairs.
     on_submit: Callback<Vec<(String, String)>>,
+    /// Previously saved ID override assignments, restored from the server.
+    #[prop(default = Vec::new())]
+    initial_overrides: Vec<(String, String)>,
+    /// Called whenever an ID override value changes, for persistence.
+    #[prop(optional)]
+    on_override_change: Option<Callback<Vec<(String, String)>>>,
     /// Whether submission is currently in progress.
     #[prop(into)]
     submitting: Signal<bool>,
@@ -45,13 +52,31 @@ pub fn FinalisingView(
     let provisionals = provisional_rules(&blocks);
     let has_provisionals = !provisionals.is_empty();
 
-    // Editable ID overrides: key -> new slug. Populated as users type replacements.
+    // Build a lookup from the saved overrides so we can pre-populate inputs.
+    let saved: std::collections::HashMap<String, String> = initial_overrides.into_iter().collect();
+
+    // Editable ID overrides: key -> new slug. Pre-populated from saved overrides.
     let id_overrides: RwSignal<Vec<(String, RwSignal<String>)>> = RwSignal::new(
         provisionals
             .iter()
-            .map(|(key, _old_id)| (key.clone(), RwSignal::new(String::new())))
+            .map(|(key, _old_id)| {
+                let initial = saved.get(key).cloned().unwrap_or_default();
+                (key.clone(), RwSignal::new(initial))
+            })
             .collect(),
     );
+
+    // Collect the current override snapshot and fire the change callback.
+    let notify_change = move || {
+        if let Some(cb) = on_override_change {
+            let snapshot: Vec<(String, String)> = id_overrides
+                .get()
+                .iter()
+                .map(|(key, sig)| (key.clone(), sig.get()))
+                .collect();
+            cb.run(snapshot);
+        }
+    };
 
     // Check whether all provisionals have been given a non-empty replacement.
     let all_resolved = Memo::new(move |_| {
@@ -130,13 +155,14 @@ pub fn FinalisingView(
                                                                     .unwrap_or_default()
                                                             }
                                                             on:input=move |ev| {
-                                                                let val = event_target_value(&ev);
-                                                                if let Some((_, sig)) =
-                                                                    overrides.get().get(i)
-                                                                {
-                                                                    sig.set(val);
+                                                                    let val = event_target_value(&ev);
+                                                                    if let Some((_, sig)) =
+                                                                        overrides.get().get(i)
+                                                                    {
+                                                                        sig.set(val);
+                                                                    }
+                                                                    notify_change();
                                                                 }
-                                                            }
                                                         />
                                                     </td>
                                                 </tr>
