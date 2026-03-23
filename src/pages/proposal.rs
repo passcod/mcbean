@@ -713,12 +713,17 @@ pub fn ProposalPage() -> impl IntoView {
 
     // Bump this to force-refetch the proposal after a state transition.
     let refetch_version = RwSignal::new(0u32);
+    // Bump this to refetch blocks after an ID rename is saved.
+    let blocks_version = RwSignal::new(0u32);
 
     let proposal = Resource::new(
         move || (proposal_id(), refetch_version.get()),
         |(pid, _)| get_proposal(pid),
     );
-    let blocks_resource = Resource::new(proposal_id, get_proposal_blocks);
+    let blocks_resource = Resource::new(
+        move || (proposal_id(), blocks_version.get()),
+        |(pid, _)| get_proposal_blocks(pid),
+    );
     let base_blocks_resource = Resource::new(proposal_id, get_base_blocks);
 
     let editing_title = RwSignal::new(false);
@@ -781,6 +786,11 @@ pub fn ProposalPage() -> impl IntoView {
     Effect::new(move |_| {
         if let Some(Ok(())) = reopen_action.value().get() {
             refetch_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(())) = set_rule_id_action.value().get() {
+            blocks_version.update(|v| *v = v.wrapping_add(1));
         }
     });
 

@@ -134,18 +134,42 @@ pub fn FinalisingView(
                                                                     .map(|(_, s)| s.get())
                                                                     .unwrap_or_default()
                                                             }
-                                                            on:input={
+                                                            on:input=move |ev| {
+                                                                let val = event_target_value(&ev);
+                                                                if let Some((_, sig)) =
+                                                                    overrides.get().get(i)
+                                                                {
+                                                                    sig.set(val);
+                                                                }
+                                                            }
+                                                            on:blur={
                                                                 let key = key.clone();
-                                                                move |ev| {
-                                                                    let val = event_target_value(&ev);
-                                                                    if let Some((_, sig)) =
-                                                                        overrides.get().get(i)
-                                                                    {
-                                                                        sig.set(val.clone());
-                                                                    }
+                                                                move |_| {
+                                                                    let val = overrides
+                                                                        .get()
+                                                                        .get(i)
+                                                                        .map(|(_, s)| s.get())
+                                                                        .unwrap_or_default();
                                                                     let trimmed = val.trim().to_string();
                                                                     if !trimmed.is_empty() {
                                                                         on_id_change.run((key.clone(), trimmed));
+                                                                    }
+                                                                }
+                                                            }
+                                                            on:keydown={
+                                                                let key = key.clone();
+                                                                move |ev: leptos::ev::KeyboardEvent| {
+                                                                    if ev.key() == "Enter" {
+                                                                        ev.prevent_default();
+                                                                        let val = overrides
+                                                                            .get()
+                                                                            .get(i)
+                                                                            .map(|(_, s)| s.get())
+                                                                            .unwrap_or_default();
+                                                                        let trimmed = val.trim().to_string();
+                                                                        if !trimmed.is_empty() {
+                                                                            on_id_change.run((key.clone(), trimmed));
+                                                                        }
                                                                     }
                                                                 }
                                                             }
