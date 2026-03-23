@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use crate::components::loro_doc::build_doc_from_specs;
 use crate::db::DbPool;
-use crate::github::GitHubClient;
+use crate::github::{GitHubClient, PullRequestResponse};
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -20,6 +20,9 @@ pub fn spawn(pool: DbPool, github: GitHubClient) {
             tokio::time::sleep(SYNC_INTERVAL).await;
             if let Err(e) = sync_all(&pool, &github).await {
                 error!(error = %e, "spec sync cycle failed");
+            }
+            if let Err(e) = sync_proposals(&pool, &github).await {
+                error!(error = %e, "proposal sync cycle failed");
             }
         }
     });
@@ -66,6 +69,165 @@ async fn sync_all(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<()> {
     }
 
     info!("spec sync: cycle complete");
+    Ok(())
+}
+
+// ── Proposal lifecycle sync ───────────────────────────────────────────────────
+
+/// Poll GitHub for PR state changes on submitted/in-progress proposals and
+/// update their lifecycle accordingly.
+async fn sync_proposals(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<()> {
+    info!("proposal sync: starting cycle");
+
+    let conn = pool.get().await?;
+
+    // Load proposals that need monitoring: submitted or in_progress.
+    let proposals: Vec<(i32, String, Option<i32>, i32, String)> = conn
+        .interact(|conn| {
+            use crate::db::schema::proposals::dsl::*;
+            proposals
+                .filter(status.eq("submitted").or(status.eq("in_progress")))
+                .select((id, branch_name, pr_number, repository_id, status))
+                .load(conn)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+        .map_err(|e| anyhow::anyhow!("query error: {e}"))?;
+
+    if proposals.is_empty() {
+        info!("proposal sync: no active proposals to check");
+        return Ok(());
+    }
+
+    info!(
+        count = proposals.len(),
+        "proposal sync: checking active proposals"
+    );
+
+    for (prop_id, branch, pr_num, repo_id, current_status) in proposals {
+        if let Err(e) = sync_single_proposal(
+            pool,
+            github,
+            prop_id,
+            &branch,
+            pr_num,
+            repo_id,
+            &current_status,
+        )
+        .await
+        {
+            error!(
+                proposal_id = prop_id,
+                error = %e,
+                "proposal sync: failed to sync proposal"
+            );
+        }
+    }
+
+    info!("proposal sync: cycle complete");
+    Ok(())
+}
+
+async fn sync_single_proposal(
+    pool: &DbPool,
+    github: &GitHubClient,
+    proposal_id: i32,
+    branch_name: &str,
+    pr_number: Option<i32>,
+    repo_id: i32,
+    current_status: &str,
+) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+
+    // Load repo owner/name.
+    let (repo_owner, repo_name): (String, String) = conn
+        .interact(move |conn| {
+            use crate::db::schema::repositories;
+            repositories::table
+                .find(repo_id)
+                .select((repositories::owner, repositories::name))
+                .first(conn)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+        .map_err(|e| anyhow::anyhow!("query error: {e}"))?;
+
+    // Check the backing PR state (if we have one).
+    if let Some(pr_num) = pr_number {
+        let pr: PullRequestResponse = github
+            .get_pull_request(&repo_owner, &repo_name, pr_num as i64)
+            .await?;
+
+        // r[impl lifecycle.merged]
+        if pr.merged == Some(true) {
+            info!(proposal_id, pr_num, "proposal sync: PR merged");
+            set_proposal_status(pool, proposal_id, "merged").await?;
+            return Ok(());
+        }
+
+        // r[impl lifecycle.abandoned]
+        if pr.state == "closed" {
+            info!(
+                proposal_id,
+                pr_num, "proposal sync: PR closed without merge"
+            );
+            set_proposal_status(pool, proposal_id, "drafting").await?;
+            return Ok(());
+        }
+    }
+
+    // r[impl lifecycle.in-progress.trigger]
+    // Check for implementation PRs targeting the proposal branch.
+    let impl_prs: Vec<PullRequestResponse> = github
+        .list_prs_with_base(&repo_owner, &repo_name, branch_name)
+        .await?;
+
+    let has_impl_prs = !impl_prs.is_empty();
+
+    match (current_status, has_impl_prs) {
+        // r[impl lifecycle.in-progress.trigger]
+        ("submitted", true) => {
+            info!(
+                proposal_id,
+                impl_pr_count = impl_prs.len(),
+                "proposal sync: implementation PRs detected, transitioning to in_progress"
+            );
+            // r[impl lifecycle.in-progress.frozen]
+            set_proposal_status(pool, proposal_id, "in_progress").await?;
+        }
+        // r[impl lifecycle.in-progress.frozen]
+        ("in_progress", false) => {
+            // All implementation PRs resolved; back to submitted.
+            info!(
+                proposal_id,
+                "proposal sync: all implementation PRs resolved, returning to submitted"
+            );
+            set_proposal_status(pool, proposal_id, "submitted").await?;
+        }
+        _ => {
+            // No state change needed.
+        }
+    }
+
+    Ok(())
+}
+
+async fn set_proposal_status(
+    pool: &DbPool,
+    proposal_id: i32,
+    new_status: &str,
+) -> anyhow::Result<()> {
+    let conn = pool.get().await?;
+    let status = new_status.to_owned();
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+        diesel::update(proposals::table.find(proposal_id))
+            .set(proposals::status.eq(&status))
+            .execute(conn)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+    .map_err(|e| anyhow::anyhow!("update error: {e}"))?;
     Ok(())
 }
 

@@ -699,6 +699,56 @@ impl GitHubClient {
         }
         Ok(())
     }
+
+    /// Get the state of a single PR by number.
+    #[instrument(skip(self), fields(owner, repo, pr_number))]
+    pub async fn get_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<PullRequestResponse, GitHubError> {
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
+        let resp = self.apply_auth(self.client.get(&url)).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// List open PRs whose head branch matches the given name.
+    /// Returns PRs targeting the proposal branch (implementation PRs).
+    #[instrument(skip(self), fields(owner, repo, head_branch))]
+    pub async fn list_prs_with_base(
+        &self,
+        owner: &str,
+        repo: &str,
+        base_branch: &str,
+    ) -> Result<Vec<PullRequestResponse>, GitHubError> {
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls");
+        let resp = self
+            .apply_auth(
+                self.client
+                    .get(&url)
+                    .query(&[("state", "open"), ("base", base_branch)]),
+            )
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GitHubError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(resp.json().await?)
+    }
 }
 
 /// Decode base64 content from GitHub API responses, which include newlines
