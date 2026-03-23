@@ -52,8 +52,7 @@ pub fn FinalisingView(
     let provisionals = provisional_rules(&blocks);
     let has_provisionals = !provisionals.is_empty();
 
-    // Editable ID overrides: key -> new slug typed by the user.
-    // Starts empty — the inputs are blank for rules that still need assignment.
+    // Editable ID overrides: key -> new slug. Populated as users type replacements.
     let id_overrides: RwSignal<Vec<(String, RwSignal<String>)>> = RwSignal::new(
         provisionals
             .iter()
@@ -221,82 +220,97 @@ pub fn FinalisingView(
 
 #[component]
 fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
-    let kind_class = match entry.kind {
-        ChangeKind::Added => "has-text-success",
-        ChangeKind::Deleted => "has-text-danger",
-        ChangeKind::Modified | ChangeKind::VersionBump => "has-text-warning-dark",
-        ChangeKind::Reordered => "has-text-info",
-    };
-    let kind_label = match &entry.kind {
-        ChangeKind::Added => "Added".to_string(),
-        ChangeKind::Deleted => "Deleted".to_string(),
-        ChangeKind::Modified => "Modified".to_string(),
-        ChangeKind::Reordered => "Reordered".to_string(),
-        ChangeKind::VersionBump => "Version bump".to_string(),
-    };
-    let label = entry.label.clone();
+    let expanded = RwSignal::new(false);
+    let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
 
-    // Word-level diff for modified blocks.
-    let diff_view = match entry.kind {
-        ChangeKind::Modified => {
-            if let (Some(old), Some(new)) = (&entry.old_text, &entry.new_text) {
-                let (old_spans, new_spans) = word_diff(old, new);
-                Some(view! {
-                    <div class="mt-2" style="font-size: 0.85em;">
-                        <div class="mb-1">
-                            <span class="has-text-weight-semibold has-text-danger-dark">"- "</span>
-                            {old_spans
-                                .into_iter()
-                                .map(|(is_common, word)| {
-                                    if is_common {
-                                        view! { <span>{word}</span> }.into_any()
-                                    } else {
-                                        view! {
-                                            <span
-                                                style="background-color: #fdd; text-decoration: line-through;"
-                                            >
-                                                {word}
-                                            </span>
-                                        }
-                                        .into_any()
-                                    }
-                                })
-                                .collect::<Vec<_>>()}
-                        </div>
-                        <div>
-                            <span class="has-text-weight-semibold has-text-success-dark">"+ "</span>
-                            {new_spans
-                                .into_iter()
-                                .map(|(is_common, word)| {
-                                    if is_common {
-                                        view! { <span>{word}</span> }.into_any()
-                                    } else {
-                                        view! {
-                                            <span style="background-color: #dfd;">
-                                                {word}
-                                            </span>
-                                        }
-                                        .into_any()
-                                    }
-                                })
-                                .collect::<Vec<_>>()}
-                        </div>
-                    </div>
-                })
-            } else {
-                None
-            }
-        }
-        _ => None,
+    let (kind_class, kind_label) = match entry.kind {
+        ChangeKind::Added => ("has-text-success", "Added"),
+        ChangeKind::Deleted => ("has-text-danger", "Deleted"),
+        ChangeKind::Modified => ("has-text-info", "Modified"),
+        ChangeKind::Reordered => ("has-text-grey", "Reordered"),
+        ChangeKind::VersionBump => ("has-text-grey-light", "Version bump"),
     };
+
+    let old = entry.old_text.clone();
+    let new = entry.new_text.clone();
 
     view! {
-        <div class="mb-3 p-3" style="border-left: 3px solid #dbdbdb; background: #fafafa;">
-            <div class="is-flex is-align-items-center">
-                <span class={format!("tag is-light mr-2 {kind_class}")}>{kind_label}</span>
-                <span class="has-text-weight-medium">{label}</span>
+        <div
+            class="box py-3 px-4 mb-2"
+            style="cursor: pointer;"
+            on:click=move |_| {
+                if has_diff {
+                    expanded.update(|v| *v = !*v);
+                }
+            }
+        >
+            <div class="is-flex is-align-items-center is-justify-content-space-between">
+                <div>
+                    <span class=kind_class style="font-weight: 600; margin-right: 0.5rem;">
+                        {kind_label}
+                    </span>
+                    <span>{entry.label.clone()}</span>
+                </div>
+                {if has_diff {
+                    view! {
+                        <span class="icon is-small has-text-grey">
+                            {move || if expanded.get() { "▼" } else { "▶" }}
+                        </span>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                }}
             </div>
-            {diff_view}
+            <Show when=move || expanded.get()>
+                <div class="mt-3" style="font-size: 0.9rem;">
+                    {match (&old, &new) {
+                        (Some(o), Some(n)) => {
+                            let (_old_spans, new_spans) = word_diff(o, n);
+                            view! {
+                                <div
+                                    class="content"
+                                    style="background: #f5f5f5; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap;"
+                                >
+                                    {new_spans
+                                        .into_iter()
+                                        .map(|(is_common, text)| {
+                                            if !is_common {
+                                                view! {
+                                                    <span style="background: #fde68a; padding: 0 2px;">
+                                                        {text}
+                                                    </span>
+                                                }
+                                                .into_any()
+                                            } else {
+                                                view! { <span>{text}" "</span> }.into_any()
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()}
+                                </div>
+                            }
+                            .into_any()
+                        }
+                        (None, Some(n)) => {
+                            view! {
+                                <div style="background: #ecfdf5; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap;">
+                                    {n.clone()}
+                                </div>
+                            }
+                            .into_any()
+                        }
+                        (Some(o), None) => {
+                            view! {
+                                <div style="background: #fef2f2; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap; text-decoration: line-through;">
+                                    {o.clone()}
+                                </div>
+                            }
+                            .into_any()
+                        }
+                        _ => ().into_any(),
+                    }}
+                </div>
+            </Show>
         </div>
     }
 }
@@ -304,16 +318,17 @@ fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::spec_block_editor::html_escape;
 
     fn rule_block(key: &str, id: &str, text: &str) -> SpecBlock {
         SpecBlock {
             key: key.to_string(),
             kind: SpecBlockKind::Rule {
                 prefix: "r".to_string(),
-                id: id.into(),
-                text: text.into(),
+                id: id.to_string(),
+                text: text.to_string(),
             },
-            html: format!("<p>{text}</p>"),
+            html: format!("<p>{}</p>", html_escape(text)),
         }
     }
 
@@ -322,10 +337,10 @@ mod tests {
             key: key.to_string(),
             kind: SpecBlockKind::Heading {
                 level,
-                text: text.into(),
+                text: text.to_string(),
                 anchor: text.to_lowercase().replace(' ', "-"),
             },
-            html: format!("<h{level}>{text}</h{level}>"),
+            html: format!("<h{level}>{}</h{level}>", html_escape(text)),
         }
     }
 
