@@ -1623,9 +1623,7 @@ pub fn SpecBlockEditor(
 
         #[cfg(feature = "hydrate")]
         {
-            use crate::components::loro_doc::{
-                TREE_NAME, key_to_tree_id, loro_doc_to_blocks, set_text_content,
-            };
+            use crate::components::loro_doc::{TREE_NAME, key_to_tree_id, set_text_content};
 
             let changed = loro_doc.with_value(|doc| {
                 let Some(node_id) = key_to_tree_id(&key) else {
