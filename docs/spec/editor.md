@@ -80,9 +80,8 @@ During finalisation, every existing rule whose text was modified MUST be evaluat
 If the LLM determines the slug no longer fits, it MUST propose a replacement slug.
 
 r[ids.finalise-approval]
-After finalisation, McBean MUST present the full set of proposed ID assignments and changes to the user for review before the proposal is submitted.
+After the LLM pass of finalisation, McBean MUST present the full set of proposed ID assignments and changes to the user for review before the proposal is submitted.
 The user MUST be able to approve, reject, or override any individual ID change.
-Feedback provided during this review MUST be passed back to the LLM for a revised pass if any changes are rejected.
 
 r[ids.persist-overrides]
 ID assignments entered during the finalisation phase MUST be persisted to the server so that they survive page reloads and tab closures.
