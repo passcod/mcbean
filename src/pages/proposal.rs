@@ -4,8 +4,8 @@ use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    ChangelogSidebar, FinaliseFab, RevertOp, SpecBlock, SpecBlockEditor, SpecSidebar,
-    blocks_to_sidebar_data,
+    ChangelogSidebar, FinaliseFab, FinalisingView, RevertOp, SpecBlock, SpecBlockEditor,
+    SpecSidebar, blocks_to_sidebar_data,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -580,7 +580,13 @@ pub fn ProposalPage() -> impl IntoView {
             .unwrap_or(0)
     };
 
-    let proposal = Resource::new(proposal_id, get_proposal);
+    // Bump this to force-refetch the proposal after a state transition.
+    let refetch_version = RwSignal::new(0u32);
+
+    let proposal = Resource::new(
+        move || (proposal_id(), refetch_version.get()),
+        |(pid, _)| get_proposal(pid),
+    );
     let blocks_resource = Resource::new(proposal_id, get_proposal_blocks);
     let base_blocks_resource = Resource::new(proposal_id, get_base_blocks);
 
@@ -593,9 +599,50 @@ pub fn ProposalPage() -> impl IntoView {
         async move { update_proposal_title(pid, new_title).await }
     });
 
+    // Drafting -> Finalising
     let finalise_action = Action::new(move |_: &()| {
         let pid = proposal_id();
         async move { finalise_proposal(pid).await }
+    });
+
+    // Finalising -> Drafting
+    let unfinalise_action = Action::new(move |_: &()| {
+        let pid = proposal_id();
+        async move { unfinalise_proposal(pid).await }
+    });
+
+    // Finalising -> Submitted
+    let submit_action = Action::new(move |_: &()| {
+        let pid = proposal_id();
+        async move { submit_proposal(pid).await }
+    });
+
+    // Submitted -> Drafting
+    let reopen_action = Action::new(move |_: &()| {
+        let pid = proposal_id();
+        async move { reopen_proposal(pid).await }
+    });
+
+    // Refetch proposal after any state transition succeeds.
+    Effect::new(move |_| {
+        if let Some(Ok(())) = finalise_action.value().get() {
+            refetch_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(())) = unfinalise_action.value().get() {
+            refetch_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(())) = submit_action.value().get() {
+            refetch_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(())) = reopen_action.value().get() {
+            refetch_version.update(|v| *v = v.wrapping_add(1));
+        }
     });
 
     view! {
@@ -611,6 +658,8 @@ pub fn ProposalPage() -> impl IntoView {
                                 .unwrap_or_else(|| format!("Proposal #{}", p.id));
                             let status = p.status.clone();
                             let is_drafting = status == "drafting";
+                            let is_finalising = status == "finalising";
+                            let is_submitted = status == "submitted";
                             let initial_title = display_title.clone();
                             let sidebar_title = display_title.clone();
 
@@ -695,6 +744,8 @@ pub fn ProposalPage() -> impl IntoView {
                                                 "tag {}",
                                                 match status.as_str() {
                                                     "drafting" => "is-warning",
+                                                    "finalising" => "is-link",
+                                                    "submitted" => "is-primary",
                                                     "in_progress" => "is-info",
                                                     "merged" => "is-success",
                                                     "abandoned" => "is-danger",
@@ -705,24 +756,31 @@ pub fn ProposalPage() -> impl IntoView {
                                     </div>
                                 </div>
 
-
-
-                                // ── Finalise error feedback ───────────────────
+                                // ── Action error feedback ─────────────────────
                                 {move || {
-                                    finalise_action
-                                        .value()
-                                        .get()
-                                        .and_then(|r: Result<(), _>| r.err())
-                                        .map(|e| {
-                                            view! {
-                                                <div class="notification is-danger is-light mb-4">
-                                                    {format!("Finalise failed: {e}")}
-                                                </div>
-                                            }
+                                    let errs: Vec<String> = [
+                                        finalise_action.value().get().and_then(|r| r.err()),
+                                        unfinalise_action.value().get().and_then(|r| r.err()),
+                                        submit_action.value().get().and_then(|r| r.err()),
+                                        reopen_action.value().get().and_then(|r| r.err()),
+                                    ]
+                                    .into_iter()
+                                    .flatten()
+                                    .map(|e| format!("{e}"))
+                                    .collect();
+
+                                    if errs.is_empty() {
+                                        None
+                                    } else {
+                                        Some(view! {
+                                            <div class="notification is-danger is-light mb-4">
+                                                {errs.join("; ")}
+                                            </div>
                                         })
+                                    }
                                 }}
 
-                                // ── Spec content ──────────────────────────────
+                                // ── Spec content (state-dependent) ────────────
                                 // r[impl edit.availability]
                                 // r[impl users.collaboration]
                                 <Suspense fallback=move || {
@@ -732,6 +790,7 @@ pub fn ProposalPage() -> impl IntoView {
                                         blocks_resource
                                             .get()
                                             .map(|result: Result<Vec<SpecBlock>, _>| match result {
+                                                // ── Drafting: full editor ──────────
                                                 Ok(_) if is_drafting => {
                                                     let blocks_out = RwSignal::new(Vec::<SpecBlock>::new());
                                                     let sync_error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -775,43 +834,139 @@ pub fn ProposalPage() -> impl IntoView {
                                                     }
                                                     .into_any()
                                                 }
-                                                                Ok(blocks) => {
-                                                                    let title = sidebar_title.clone();
-                                                                    let (outline, search_entries) =
-                                                                        blocks_to_sidebar_data(&blocks, &title);
-                                                                    view! {
-                                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
-                                                                            <SpecSidebar outline=outline search_entries=search_entries />
-                                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
-                                                                                <div class="spec-readonly">
-                                                                                    {blocks
-                                                                                        .into_iter()
-                                                                                        .map(|b| {
-                                                                                            let html = b.html.clone();
-                                                                                            let text = b
-                                                                                                .edit_text()
-                                                                                                .to_owned();
-                                                                                            view! {
-                                                                                                <div class="content mb-3">
-                                                                                                    {if html.is_empty() {
-                                                                                                        view! { <p>{text}</p> }
-                                                                                                            .into_any()
-                                                                                                    } else {
-                                                                                                        view! {
-                                                                                                            <div inner_html=html />
-                                                                                                        }
-                                                                                                            .into_any()
-                                                                                                    }}
-                                                                                                </div>
-                                                                                            }
-                                                                                        })
-                                                                                        .collect::<Vec<_>>()}
-                                                                                </div>
-                                                                            </div>
-                                                                        </div>
+                                                // ── Finalising: review & submit ───
+                                                // r[impl lifecycle.finalising]
+                                                Ok(blocks) if is_finalising => {
+                                                    let base = base_blocks_resource
+                                                        .get()
+                                                        .and_then(|r| r.ok())
+                                                        .unwrap_or_default();
+                                                    let submit_err_signal = Signal::derive(move || {
+                                                        submit_action
+                                                            .value()
+                                                            .get()
+                                                            .and_then(|r| r.err())
+                                                            .map(|e| format!("{e}"))
+                                                    });
+                                                    let submitting_signal = Signal::derive(move || {
+                                                        submit_action.pending().get()
+                                                    });
+                                                    view! {
+                                                        <FinalisingView
+                                                            blocks=blocks
+                                                            base_blocks=base
+                                                            on_back=Callback::new(move |_| {
+                                                                unfinalise_action.dispatch(());
+                                                            })
+                                                            on_submit=Callback::new(move |_| {
+                                                                submit_action.dispatch(());
+                                                            })
+                                                            submitting=submitting_signal
+                                                            submit_error=submit_err_signal
+                                                        />
+                                                    }
+                                                    .into_any()
+                                                }
+                                                // ── Submitted: read-only + reopen ─
+                                                // r[impl lifecycle.submitted]
+                                                // r[impl lifecycle.submitted.reopen]
+                                                Ok(blocks) if is_submitted => {
+                                                    let title = sidebar_title.clone();
+                                                    let (outline, search_entries) =
+                                                        blocks_to_sidebar_data(&blocks, &title);
+                                                    view! {
+                                                        <div class="notification is-info is-light mb-4">
+                                                            <div class="is-flex is-align-items-center is-justify-content-space-between">
+                                                                <span>
+                                                                    "This proposal has been submitted. A pull request is open in the backing repository."
+                                                                </span>
+                                                                <button
+                                                                    class="button is-small is-warning"
+                                                                    disabled=move || reopen_action.pending().get()
+                                                                    on:click=move |_| {
+                                                                        reopen_action.dispatch(());
                                                                     }
-                                                                    .into_any()
-                                                                }
+                                                                >
+                                                                    {move || {
+                                                                        if reopen_action.pending().get() {
+                                                                            "Reopening…"
+                                                                        } else {
+                                                                            "Reopen for Editing"
+                                                                        }
+                                                                    }}
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+                                                            <SpecSidebar outline=outline search_entries=search_entries />
+                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                                                                <div class="spec-readonly">
+                                                                    {blocks
+                                                                        .into_iter()
+                                                                        .map(|b| {
+                                                                            let html = b.html.clone();
+                                                                            let text = b
+                                                                                .edit_text()
+                                                                                .to_owned();
+                                                                            view! {
+                                                                                <div class="content mb-3">
+                                                                                    {if html.is_empty() {
+                                                                                        view! { <p>{text}</p> }
+                                                                                            .into_any()
+                                                                                    } else {
+                                                                                        view! {
+                                                                                            <div inner_html=html />
+                                                                                        }
+                                                                                            .into_any()
+                                                                                    }}
+                                                                                </div>
+                                                                            }
+                                                                        })
+                                                                        .collect::<Vec<_>>()}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                    .into_any()
+                                                }
+                                                // ── Any other state: read-only ────
+                                                Ok(blocks) => {
+                                                    let title = sidebar_title.clone();
+                                                    let (outline, search_entries) =
+                                                        blocks_to_sidebar_data(&blocks, &title);
+                                                    view! {
+                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+                                                            <SpecSidebar outline=outline search_entries=search_entries />
+                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                                                                <div class="spec-readonly">
+                                                                    {blocks
+                                                                        .into_iter()
+                                                                        .map(|b| {
+                                                                            let html = b.html.clone();
+                                                                            let text = b
+                                                                                .edit_text()
+                                                                                .to_owned();
+                                                                            view! {
+                                                                                <div class="content mb-3">
+                                                                                    {if html.is_empty() {
+                                                                                        view! { <p>{text}</p> }
+                                                                                            .into_any()
+                                                                                    } else {
+                                                                                        view! {
+                                                                                            <div inner_html=html />
+                                                                                        }
+                                                                                            .into_any()
+                                                                                    }}
+                                                                                </div>
+                                                                            }
+                                                                        })
+                                                                        .collect::<Vec<_>>()}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                    .into_any()
+                                                }
                                                 Err(e) => view! {
                                                     <div class="notification is-danger">
                                                         {format!("Error loading spec: {e}")}
