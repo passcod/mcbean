@@ -3,6 +3,10 @@ use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
+use crate::components::changelog_sidebar::{
+    ChangeKind, ChangelogEntry, compute_changelog, word_diff,
+};
+use crate::components::sidebar::{SearchEntry, SpecOutline};
 use crate::components::{
     ChangelogSidebar, FinaliseFab, FinalisingView, RevertOp, SpecBlock, SpecBlockEditor,
     SpecSidebar, blocks_to_sidebar_data,
@@ -887,6 +891,11 @@ pub fn ProposalPage() -> impl IntoView {
                                                 // r[impl lifecycle.submitted]
                                                 // r[impl lifecycle.submitted.reopen]
                                                 Ok(blocks) if is_submitted => {
+                                                    let base = base_blocks_resource
+                                                        .get()
+                                                        .and_then(|r| r.ok())
+                                                        .unwrap_or_default();
+                                                    let changelog = compute_changelog(&base, &blocks);
                                                     let title = sidebar_title.clone();
                                                     let (outline, search_entries) =
                                                         blocks_to_sidebar_data(&blocks, &title);
@@ -913,35 +922,12 @@ pub fn ProposalPage() -> impl IntoView {
                                                                 </button>
                                                             </div>
                                                         </div>
-                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
-                                                            <SpecSidebar outline=outline search_entries=search_entries />
-                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
-                                                                <div class="spec-readonly">
-                                                                    {blocks
-                                                                        .into_iter()
-                                                                        .map(|b| {
-                                                                            let html = b.html.clone();
-                                                                            let text = b
-                                                                                .edit_text()
-                                                                                .to_owned();
-                                                                            view! {
-                                                                                <div class="content mb-3">
-                                                                                    {if html.is_empty() {
-                                                                                        view! { <p>{text}</p> }
-                                                                                            .into_any()
-                                                                                    } else {
-                                                                                        view! {
-                                                                                            <div inner_html=html />
-                                                                                        }
-                                                                                            .into_any()
-                                                                                    }}
-                                                                                </div>
-                                                                            }
-                                                                        })
-                                                                        .collect::<Vec<_>>()}
-                                                                </div>
-                                                            </div>
-                                                        </div>
+                                                        <ReadOnlySpecWithChangelog
+                                                            blocks=blocks
+                                                            changelog=changelog
+                                                            outline=outline
+                                                            search_entries=search_entries
+                                                        />
                                                     }
                                                     .into_any()
                                                 }
@@ -949,6 +935,11 @@ pub fn ProposalPage() -> impl IntoView {
                                                 // r[impl lifecycle.in-progress.frozen]
                                                 // r[impl lifecycle.in-progress.amendment]
                                                 Ok(blocks) => {
+                                                    let base = base_blocks_resource
+                                                        .get()
+                                                        .and_then(|r| r.ok())
+                                                        .unwrap_or_default();
+                                                    let changelog = compute_changelog(&base, &blocks);
                                                     let title = sidebar_title.clone();
                                                     let frozen_status = status.clone();
                                                     let (outline, search_entries) =
@@ -987,35 +978,12 @@ pub fn ProposalPage() -> impl IntoView {
                                                             }.into_any(),
                                                             _ => ().into_any(),
                                                         }}
-                                                        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
-                                                            <SpecSidebar outline=outline search_entries=search_entries />
-                                                            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
-                                                                <div class="spec-readonly">
-                                                                    {blocks
-                                                                        .into_iter()
-                                                                        .map(|b| {
-                                                                            let html = b.html.clone();
-                                                                            let text = b
-                                                                                .edit_text()
-                                                                                .to_owned();
-                                                                            view! {
-                                                                                <div class="content mb-3">
-                                                                                    {if html.is_empty() {
-                                                                                        view! { <p>{text}</p> }
-                                                                                            .into_any()
-                                                                                    } else {
-                                                                                        view! {
-                                                                                            <div inner_html=html />
-                                                                                        }
-                                                                                            .into_any()
-                                                                                    }}
-                                                                                </div>
-                                                                            }
-                                                                        })
-                                                                        .collect::<Vec<_>>()}
-                                                                </div>
-                                                            </div>
-                                                        </div>
+                                                        <ReadOnlySpecWithChangelog
+                                                            blocks=blocks
+                                                            changelog=changelog
+                                                            outline=outline
+                                                            search_entries=search_entries
+                                                        />
                                                     }
                                                     .into_any()
                                                 }
@@ -1050,5 +1018,178 @@ pub fn ProposalPage() -> impl IntoView {
                     })
             }}
         </Suspense>
+    }
+}
+
+// ── Read-only spec view with changelog sidebar ────────────────────────────────
+
+#[component]
+fn ReadOnlySpecWithChangelog(
+    blocks: Vec<SpecBlock>,
+    changelog: Vec<ChangelogEntry>,
+    outline: Vec<SpecOutline>,
+    search_entries: Vec<SearchEntry>,
+) -> impl IntoView {
+    let changelog_empty = changelog.is_empty();
+    let (content_entries, bump_entries): (Vec<_>, Vec<_>) = changelog
+        .into_iter()
+        .partition(|e| e.kind != ChangeKind::VersionBump);
+    let has_bumps = !bump_entries.is_empty();
+
+    view! {
+        <div style="display: flex; align-items: flex-start; margin: 0 -1.5rem;">
+            <SpecSidebar outline=outline search_entries=search_entries />
+            <div style="flex: 1; min-width: 0; padding: 0 1.5rem;">
+                <div class="spec-readonly content">
+                    {blocks
+                        .into_iter()
+                        .map(|b| {
+                            view! { <div class="mb-3" inner_html=b.html /> }
+                        })
+                        .collect::<Vec<_>>()}
+                </div>
+            </div>
+            // Read-only changelog panel.
+            <aside style="flex-shrink: 0; width: 280px; position: sticky; top: 0; \
+                          height: 100vh; overflow-y: auto; border-left: 1px solid #e5e7eb; \
+                          background: #fafafa; font-size: 0.8rem;">
+                <div style="padding: 0.4rem 0.5rem; border-bottom: 1px solid #e5e7eb; \
+                            font-size: 0.75rem; font-weight: 600; color: #111827;">
+                    "Changes"
+                </div>
+                {if changelog_empty {
+                    view! {
+                        <div style="padding: 0.75rem; font-size: 0.75rem; \
+                                    color: #9ca3af; font-style: italic;">
+                            "No changes."
+                        </div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <div style="padding: 0.4rem 0;">
+                            {content_entries
+                                .into_iter()
+                                .map(|e| view! { <ReadOnlyChangeEntry entry=e /> })
+                                .collect::<Vec<_>>()}
+                            {if has_bumps {
+                                view! {
+                                    <div>
+                                        <div style="margin-top: 0.75rem; \
+                                                    padding: 0.2rem 0.75rem; \
+                                                    font-size: 0.65rem; font-weight: 700; \
+                                                    text-transform: uppercase; \
+                                                    letter-spacing: 0.05em; color: #9ca3af;">
+                                            "Version bumps"
+                                        </div>
+                                        {bump_entries
+                                            .into_iter()
+                                            .map(|e| view! { <ReadOnlyChangeEntry entry=e /> })
+                                            .collect::<Vec<_>>()}
+                                    </div>
+                                }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                        </div>
+                    }.into_any()
+                }}
+            </aside>
+        </div>
+    }
+}
+
+#[component]
+fn ReadOnlyChangeEntry(entry: ChangelogEntry) -> impl IntoView {
+    let expanded = RwSignal::new(false);
+    let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
+
+    let (kind_color, kind_label) = match entry.kind {
+        ChangeKind::Added => ("#22c55e", "Added"),
+        ChangeKind::Deleted => ("#ef4444", "Deleted"),
+        ChangeKind::Modified => ("#3b82f6", "Modified"),
+        ChangeKind::Reordered => ("#9ca3af", "Reordered"),
+        ChangeKind::VersionBump => ("#d1d5db", "Bump"),
+    };
+
+    let old = entry.old_text.clone();
+    let new = entry.new_text.clone();
+
+    view! {
+        <div
+            style="padding: 0.35rem 0.75rem; cursor: pointer; \
+                   border-bottom: 1px solid #f3f4f6;"
+            on:click=move |_| {
+                if has_diff {
+                    expanded.update(|v| *v = !*v);
+                }
+            }
+        >
+            <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <span style=format!(
+                    "width: 6px; height: 6px; border-radius: 50%; \
+                     background: {kind_color}; flex-shrink: 0;"
+                ) />
+                <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; \
+                             white-space: nowrap; font-size: 0.75rem;">
+                    <span style="font-weight: 600; margin-right: 0.3rem;">{kind_label}</span>
+                    {entry.label.clone()}
+                </span>
+                {if has_diff {
+                    view! {
+                        <span style="color: #9ca3af; font-size: 0.65rem; flex-shrink: 0;">
+                            {move || if expanded.get() { "▼" } else { "▶" }}
+                        </span>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
+            </div>
+            <Show when=move || expanded.get()>
+                <div style="margin-top: 0.35rem; font-size: 0.7rem;">
+                    {match (&old, &new) {
+                        (Some(o), Some(n)) => {
+                            let (_old_spans, new_spans) = word_diff(o, n);
+                            view! {
+                                <div style="background: #f5f5f5; padding: 0.5rem; \
+                                            border-radius: 4px; white-space: pre-wrap;">
+                                    {new_spans
+                                        .into_iter()
+                                        .map(|(is_common, text)| {
+                                            if !is_common {
+                                                view! {
+                                                    <span style="background: #fde68a; padding: 0 2px;">
+                                                        {text}
+                                                    </span>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span>{text}" "</span> }.into_any()
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()}
+                                </div>
+                            }.into_any()
+                        }
+                        (None, Some(n)) => {
+                            view! {
+                                <div style="background: #ecfdf5; padding: 0.5rem; \
+                                            border-radius: 4px; white-space: pre-wrap;">
+                                    {n.clone()}
+                                </div>
+                            }.into_any()
+                        }
+                        (Some(o), None) => {
+                            view! {
+                                <div style="background: #fef2f2; padding: 0.5rem; \
+                                            border-radius: 4px; white-space: pre-wrap; \
+                                            text-decoration: line-through;">
+                                    {o.clone()}
+                                </div>
+                            }.into_any()
+                        }
+                        _ => ().into_any(),
+                    }}
+                </div>
+            </Show>
+        </div>
     }
 }
