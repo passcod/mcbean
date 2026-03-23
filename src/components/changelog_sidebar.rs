@@ -402,6 +402,32 @@ pub fn ChangelogSidebar(
                     </button>
                 </div>
 
+                // Authors strip, just below the header.
+                <Suspense fallback=|| ()>
+                    {move || Suspend::new(async move {
+                        let contributors = contributors.await.unwrap_or_default();
+                        if contributors.is_empty() {
+                            return ().into_any();
+                        }
+                        view! {
+                            <div style="flex-shrink: 0; border-bottom: 1px solid #e5e7eb; \
+                                        padding: 0.4rem 0.6rem; display: flex; \
+                                        align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                                <span style="font-size: 0.6rem; font-weight: 700; \
+                                             text-transform: uppercase; letter-spacing: 0.05em; \
+                                             color: #9ca3af; margin-right: 0.25rem; flex-shrink: 0;">
+                                    "Authors"
+                                </span>
+                                {contributors
+                                    .into_iter()
+                                    .map(|info| view! { <Avatar info=info size=24 /> })
+                                    .collect::<Vec<_>>()}
+                            </div>
+                        }
+                        .into_any()
+                    })}
+                </Suspense>
+
                 // Scrollable entry list.
                 <div style="overflow-y: auto; flex: 1;">
                     {move || {
@@ -459,31 +485,6 @@ pub fn ChangelogSidebar(
                     }}
                 </div>
 
-                // Authors strip at the bottom.
-                <Suspense fallback=|| ()>
-                    {move || Suspend::new(async move {
-                        let contributors = contributors.await.unwrap_or_default();
-                        if contributors.is_empty() {
-                            return ().into_any();
-                        }
-                        view! {
-                            <div style="flex-shrink: 0; border-top: 1px solid #e5e7eb; \
-                                        padding: 0.4rem 0.6rem; display: flex; \
-                                        align-items: center; gap: 0.35rem; flex-wrap: wrap;">
-                                <span style="font-size: 0.6rem; font-weight: 700; \
-                                             text-transform: uppercase; letter-spacing: 0.05em; \
-                                             color: #9ca3af; margin-right: 0.25rem; flex-shrink: 0;">
-                                    "Authors"
-                                </span>
-                                {contributors
-                                    .into_iter()
-                                    .map(|info| view! { <Avatar info=info size=24 /> })
-                                    .collect::<Vec<_>>()}
-                            </div>
-                        }
-                        .into_any()
-                    })}
-                </Suspense>
             </aside>
         </div>
     }
