@@ -153,6 +153,11 @@ The history MUST remain browsable at any point in the future.
 Each history entry MUST record which user made the change.
 For changes made by the LLM edit-assist, the entry MUST record the user on whose behalf the LLM acted, and the prompt that produced the change.
 
+r[edit.sentence-per-line]
+McBean MUST store rule prose as Markdown with one sentence per line.
+A sentence boundary is detected at `.`, `!`, or `?` followed by either whitespace and an uppercase letter or digit, or at end of text.
+Line breaks within a paragraph MUST NOT act as sentence boundaries; each complete sentence MUST appear on a single output line regardless of how the source text was wrapped.
+
 ## Proposals
 
 A proposal is a named, persistent draft of changes to a spec.

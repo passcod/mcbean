@@ -31,60 +31,70 @@ use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind, slugify};
 ///
 /// Sentences are split at `.`, `!`, or `?` followed by either whitespace and
 /// an uppercase letter/digit, or end of string.  The terminating punctuation
-/// is kept at the end of its line.  Existing hard newlines within a paragraph
-/// are preserved as sentence boundaries.
+/// is kept at the end of its sentence line.
+///
+/// Soft-wrapped lines (physical newlines that are not paragraph breaks) are
+/// joined with a space before sentence detection, so a sentence that spans
+/// multiple source lines appears on a single output line.
+///
+/// r[edit.sentence-per-line]
 fn sentences(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            out.push('\n');
-            continue;
-        }
-        let chars: Vec<char> = line.chars().collect();
-        let mut start = 0;
-        let mut i = 0;
-        while i < chars.len() {
-            if matches!(chars[i], '.' | '!' | '?') {
-                // Look ahead past any closing punctuation/quotes.
-                let mut j = i + 1;
-                while j < chars.len() && matches!(chars[j], '.' | '!' | '?' | '"' | '\'' | ')') {
-                    j += 1;
-                }
-                // Split if followed by whitespace + uppercase/digit, or end.
-                let is_boundary = if j >= chars.len() {
-                    true
-                } else if chars[j].is_whitespace() {
-                    let k = j + 1;
-                    k >= chars.len() || chars[k].is_uppercase() || chars[k].is_ascii_digit()
-                } else {
-                    false
-                };
-                if is_boundary {
-                    let sentence: String = chars[start..j].iter().collect();
-                    let trimmed = sentence.trim();
-                    if !trimmed.is_empty() {
-                        out.push_str(trimmed);
-                        out.push('\n');
-                    }
-                    // Skip whitespace after the sentence end.
-                    i = j;
-                    while i < chars.len() && chars[i].is_whitespace() {
-                        i += 1;
-                    }
-                    start = i;
-                    continue;
-                }
+    // Join soft-wrapped lines into one string before scanning for boundaries.
+    let joined: String = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if joined.is_empty() {
+        return String::new();
+    }
+
+    let chars: Vec<char> = joined.chars().collect();
+    let mut out = String::with_capacity(joined.len());
+    let mut start = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        if matches!(chars[i], '.' | '!' | '?') {
+            // Look ahead past any closing punctuation/quotes.
+            let mut j = i + 1;
+            while j < chars.len() && matches!(chars[j], '.' | '!' | '?' | '"' | '\'' | ')') {
+                j += 1;
             }
-            i += 1;
+            // Split if followed by whitespace + uppercase/digit, or end.
+            let is_boundary = if j >= chars.len() {
+                true
+            } else if chars[j].is_whitespace() {
+                let k = j + 1;
+                k >= chars.len() || chars[k].is_uppercase() || chars[k].is_ascii_digit()
+            } else {
+                false
+            };
+            if is_boundary {
+                let sentence: String = chars[start..j].iter().collect();
+                let trimmed = sentence.trim();
+                if !trimmed.is_empty() {
+                    out.push_str(trimmed);
+                    out.push('\n');
+                }
+                // Skip whitespace after the sentence end.
+                i = j;
+                while i < chars.len() && chars[i].is_whitespace() {
+                    i += 1;
+                }
+                start = i;
+                continue;
+            }
         }
-        // Remaining text after the last split.
-        let tail: String = chars[start..].iter().collect();
-        let trimmed = tail.trim();
-        if !trimmed.is_empty() {
-            out.push_str(trimmed);
-            out.push('\n');
-        }
+        i += 1;
+    }
+    // Remaining text after the last split.
+    let tail: String = chars[start..].iter().collect();
+    let trimmed = tail.trim();
+    if !trimmed.is_empty() {
+        out.push_str(trimmed);
+        out.push('\n');
     }
     // Remove trailing newline; callers add their own.
     while out.ends_with('\n') {
@@ -669,6 +679,90 @@ fn html_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::components::spec_block_editor::SpecBlockKind;
+
+    // ── sentences() unit tests ────────────────────────────────────────────────
+
+    // r[verify edit.sentence-per-line]
+    #[test]
+    fn test_sentences_single_sentence() {
+        assert_eq!(sentences("Hello world."), "Hello world.");
+    }
+
+    // r[verify edit.sentence-per-line]
+    #[test]
+    fn test_sentences_multiple_on_one_line() {
+        assert_eq!(
+            sentences("First sentence. Second sentence. Third sentence."),
+            "First sentence.\nSecond sentence.\nThird sentence."
+        );
+    }
+
+    // r[verify edit.sentence-per-line]
+    #[test]
+    fn test_sentences_soft_wrapped_joins_before_split() {
+        // A single sentence split across two physical lines must appear on one output line.
+        let input = "The file records the disk-encryption mode of the\nrunning system.";
+        assert_eq!(
+            sentences(input),
+            "The file records the disk-encryption mode of the running system."
+        );
+    }
+
+    // r[verify edit.sentence-per-line]
+    #[test]
+    fn test_sentences_soft_wrapped_paragraph() {
+        // Real-world case: a paragraph word-wrapped at ~80 chars with four sentences.
+        let input = "\
+The file `/etc/bes/image-variant` records the disk-encryption mode of the
+running system. Build-time images write the build variant (`metal` or
+`cloud`). The installer overwrites this with the user's chosen encryption
+mode: `luks-tpm`, `luks-keyfile`, or `plain`. Runtime scripts must not
+assume the file contains only `metal` or `cloud`; they should detect the
+actual situation (e.g. whether LUKS is active) instead.";
+        let got = sentences(input);
+        let lines: Vec<&str> = got.lines().collect();
+        assert_eq!(lines.len(), 4, "expected 4 sentence lines, got:\n{got}");
+        assert!(
+            lines[0].ends_with("running system."),
+            "line 0 unexpected: {}",
+            lines[0]
+        );
+        assert!(
+            lines[1].ends_with("`cloud`)."),
+            "line 1 unexpected: {}",
+            lines[1]
+        );
+        assert!(
+            lines[2].ends_with("`plain`."),
+            "line 2 unexpected: {}",
+            lines[2]
+        );
+        assert!(
+            lines[3].ends_with("instead."),
+            "line 3 unexpected: {}",
+            lines[3]
+        );
+    }
+
+    // r[verify edit.sentence-per-line]
+    #[test]
+    fn test_sentences_no_split_on_lowercase_after_period() {
+        // "e.g." followed by a lowercase word must not be treated as a boundary.
+        let input = "Use e.g. this approach for better results.";
+        assert_eq!(
+            sentences(input),
+            "Use e.g. this approach for better results."
+        );
+    }
+
+    // r[verify edit.sentence-per-line]
+    #[test]
+    fn test_sentences_question_and_exclamation() {
+        assert_eq!(
+            sentences("Is this right? Yes it is! Good."),
+            "Is this right?\nYes it is!\nGood."
+        );
+    }
 
     fn run<F: std::future::Future<Output = LoroDoc>>(f: F) -> LoroDoc {
         tokio::runtime::Builder::new_current_thread()
