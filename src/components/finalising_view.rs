@@ -23,6 +23,17 @@ fn provisional_rules(blocks: &[SpecBlock]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// For a given tree key, return the rule ID if the block is a rule.
+fn rule_id_for_key<'a>(blocks: &'a [SpecBlock], key: &str) -> Option<&'a str> {
+    blocks
+        .iter()
+        .find(|b| b.key == key)
+        .and_then(|b| match &b.kind {
+            SpecBlockKind::Rule { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+}
+
 // r[impl lifecycle.finalising]
 // r[impl lifecycle.finalising.ids]
 // r[impl ids.persist-overrides]
@@ -49,29 +60,45 @@ pub fn FinalisingView(
     #[prop(into)]
     submit_error: Signal<Option<String>>,
 ) -> impl IntoView {
-    let provisionals = provisional_rules(&blocks);
-    let has_provisionals = !provisionals.is_empty();
+    let provisional_keys: std::collections::HashSet<String> = provisional_rules(&blocks)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let has_provisionals = !provisional_keys.is_empty();
 
-    // Editable ID overrides: key -> new slug. Populated as users type replacements.
-    let id_overrides: RwSignal<Vec<(String, RwSignal<String>)>> = RwSignal::new(
-        provisionals
-            .iter()
-            .map(|(key, _old_id)| (key.clone(), RwSignal::new(String::new())))
-            .collect(),
-    );
+    let changelog = compute_changelog(&base_blocks, &blocks);
 
-    // Check whether all provisionals have been given a non-empty replacement.
+    // Build per-rule editable signals for every rule that appears in the changelog.
+    // Provisional rules start empty (user must fill them in); final rules start
+    // with their current ID (user may optionally change them).
+    let rule_overrides: Vec<(String, RwSignal<String>)> = changelog
+        .iter()
+        .filter_map(|entry| {
+            rule_id_for_key(&blocks, &entry.key).map(|current_id| {
+                let initial = if provisional_keys.contains(&entry.key) {
+                    String::new()
+                } else {
+                    current_id.to_owned()
+                };
+                (entry.key.clone(), RwSignal::new(initial))
+            })
+        })
+        .collect();
+    let rule_overrides = StoredValue::new(rule_overrides);
+
+    // Submission is blocked while any provisional rule still has an empty input.
+    let provisional_keys_for_memo = provisional_keys.clone();
     let all_resolved = Memo::new(move |_| {
         if !has_provisionals {
             return true;
         }
-        id_overrides
-            .get()
-            .iter()
-            .all(|(_, sig)| !sig.get().trim().is_empty())
+        rule_overrides.with_value(|overrides| {
+            overrides
+                .iter()
+                .filter(|(key, _)| provisional_keys_for_memo.contains(key))
+                .all(|(_, sig)| !sig.get().trim().is_empty())
+        })
     });
-
-    let changelog = compute_changelog(&base_blocks, &blocks);
 
     view! {
         <div class="box" style="margin-bottom: 1.5rem;">
@@ -91,110 +118,22 @@ pub fn FinalisingView(
                 })
             }}
 
-            // Provisional ID resolution section.
+            // Provisional ID warning (no inputs — those are inline in the changelog now).
             {if has_provisionals {
-                let prov_list = provisionals.clone();
-                let overrides = id_overrides;
                 view! {
                     <div class="notification is-warning is-light mb-5">
-                        <p class="mb-3">
-                            <strong>{format!("{} rule(s) still have provisional IDs:", prov_list.len())}</strong>
+                        <p>
+                            <strong>"Some rules still have provisional IDs."</strong>
+                            " Fill in replacements below before submitting."
                         </p>
-                        <div class="table-container">
-                            <table class="table is-fullwidth is-narrow">
-                                <thead>
-                                    <tr>
-                                        <th>"Provisional ID"</th>
-                                        <th>"New ID"</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {prov_list
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, (key, old_id))| {
-                                            let old_id = old_id.clone();
-                                            let key = key.clone();
-                                            view! {
-                                                <tr>
-                                                    <td>
-                                                        <code class="has-text-warning-dark">
-                                                            {old_id}
-                                                        </code>
-                                                    </td>
-                                                    <td>
-                                                        <input
-                                                            class="input is-small"
-                                                            type="text"
-                                                            placeholder="e.g. security.auth-tokens"
-                                                            prop:value=move || {
-                                                                overrides
-                                                                    .get()
-                                                                    .get(i)
-                                                                    .map(|(_, s)| s.get())
-                                                                    .unwrap_or_default()
-                                                            }
-                                                            on:input=move |ev| {
-                                                                let val = event_target_value(&ev);
-                                                                if let Some((_, sig)) =
-                                                                    overrides.get().get(i)
-                                                                {
-                                                                    sig.set(val);
-                                                                }
-                                                            }
-                                                            on:blur={
-                                                                let key = key.clone();
-                                                                move |_| {
-                                                                    let val = overrides
-                                                                        .get()
-                                                                        .get(i)
-                                                                        .map(|(_, s)| s.get())
-                                                                        .unwrap_or_default();
-                                                                    let trimmed = val.trim().to_string();
-                                                                    if !trimmed.is_empty() {
-                                                                        on_id_change.run((key.clone(), trimmed));
-                                                                    }
-                                                                }
-                                                            }
-                                                            on:keydown={
-                                                                let key = key.clone();
-                                                                move |ev: leptos::ev::KeyboardEvent| {
-                                                                    if ev.key() == "Enter" {
-                                                                        ev.prevent_default();
-                                                                        let val = overrides
-                                                                            .get()
-                                                                            .get(i)
-                                                                            .map(|(_, s)| s.get())
-                                                                            .unwrap_or_default();
-                                                                        let trimmed = val.trim().to_string();
-                                                                        if !trimmed.is_empty() {
-                                                                            on_id_change.run((key.clone(), trimmed));
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        />
-                                                    </td>
-                                                </tr>
-                                            }
-                                        })
-                                        .collect::<Vec<_>>()}
-                                </tbody>
-                            </table>
-                        </div>
                     </div>
                 }
                 .into_any()
             } else {
-                view! {
-                    <div class="notification is-success is-light mb-5">
-                        <p>"All rule IDs are finalised."</p>
-                    </div>
-                }
-                .into_any()
+                ().into_any()
             }}
 
-            // Changelog.
+            // Changelog with inline-editable rule IDs.
             <h3 class="title is-5 mb-3">"Changes"</h3>
             {if changelog.is_empty() {
                 view! {
@@ -207,7 +146,19 @@ pub fn FinalisingView(
                         {changelog
                             .into_iter()
                             .map(|entry| {
-                                view! { <ChangelogRow entry=entry /> }
+                                let key = entry.key.clone();
+                                let override_sig = rule_overrides.with_value(|overrides| {
+                                    overrides.iter().find(|(k, _)| *k == key).map(|(_, s)| *s)
+                                });
+                                let is_provisional = provisional_keys.contains(&key);
+                                view! {
+                                    <ChangelogRow
+                                        entry=entry
+                                        rule_id_signal=override_sig
+                                        is_provisional=is_provisional
+                                        on_id_change=on_id_change
+                                    />
+                                }
                             })
                             .collect::<Vec<_>>()}
                     </div>
@@ -242,8 +193,24 @@ pub fn FinalisingView(
     }
 }
 
+/// Commit the current value of an override signal via the callback.
+fn commit_id_override(sig: RwSignal<String>, key: &str, on_id_change: Callback<(String, String)>) {
+    let trimmed = sig.get_untracked().trim().to_string();
+    if !trimmed.is_empty() {
+        on_id_change.run((key.to_owned(), trimmed));
+    }
+}
+
 #[component]
-fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
+fn ChangelogRow(
+    entry: ChangelogEntry,
+    /// If this entry is a rule, the editable signal holding the (possibly overridden) ID.
+    rule_id_signal: Option<RwSignal<String>>,
+    /// Whether the rule's current ID is provisional (must be replaced).
+    is_provisional: bool,
+    /// Callback to persist a rule ID rename.
+    on_id_change: Callback<(String, String)>,
+) -> impl IntoView {
     let expanded = RwSignal::new(false);
     let has_diff = entry.old_text.is_some() || entry.new_text.is_some();
 
@@ -257,6 +224,54 @@ fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
 
     let old = entry.old_text.clone();
     let new = entry.new_text.clone();
+    let entry_key = entry.key.clone();
+
+    // Build the label portion: either an editable ID input or a plain text label.
+    let label_view = match rule_id_signal {
+        Some(sig) => {
+            let key_for_blur = entry_key.clone();
+            let key_for_enter = entry_key.clone();
+            let input_class = if is_provisional {
+                "input is-small is-warning"
+            } else {
+                "input is-small"
+            };
+            view! {
+                <span
+                    class="is-inline-flex is-align-items-center"
+                    style="gap: 0.35rem;"
+                    on:click=move |ev| ev.stop_propagation()
+                >
+                    <span class="has-text-grey-light" style="font-size: 0.85em;">
+                        {if is_provisional { "new rule →" } else { "ID:" }}
+                    </span>
+                    <input
+                        class=input_class
+                        type="text"
+                        placeholder="e.g. security.auth-tokens"
+                        style="width: 16em;"
+                        prop:value=move || sig.get()
+                        on:input=move |ev| sig.set(event_target_value(&ev))
+                        on:blur={
+                            let key = key_for_blur;
+                            move |_| commit_id_override(sig, &key, on_id_change)
+                        }
+                        on:keydown={
+                            let key = key_for_enter;
+                            move |ev: leptos::ev::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    commit_id_override(sig, &key, on_id_change);
+                                }
+                            }
+                        }
+                    />
+                </span>
+            }
+            .into_any()
+        }
+        None => view! { <span>{entry.label.clone()}</span> }.into_any(),
+    };
 
     view! {
         <div
@@ -269,11 +284,11 @@ fn ChangelogRow(entry: ChangelogEntry) -> impl IntoView {
             }
         >
             <div class="is-flex is-align-items-center is-justify-content-space-between">
-                <div>
-                    <span class=kind_class style="font-weight: 600; margin-right: 0.5rem;">
+                <div class="is-flex is-align-items-center" style="gap: 0.5rem;">
+                    <span class=kind_class style="font-weight: 600;">
                         {kind_label}
                     </span>
-                    <span>{entry.label.clone()}</span>
+                    {label_view}
                 </div>
                 {if has_diff {
                     view! {
