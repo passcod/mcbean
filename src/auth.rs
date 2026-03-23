@@ -90,12 +90,12 @@ pub async fn get_or_create_user_id() -> Result<i32, leptos::prelude::ServerFnErr
             .optional()?;
 
         if let Some(id) = existing {
-            // Refresh profile_pic_url if we have one from headers.
-            if user.profile_pic_url.is_some() {
-                diesel::update(users::table.find(id))
-                    .set(users::profile_pic_url.eq(&user.profile_pic_url))
-                    .execute(conn)?;
-            }
+            diesel::update(users::table.find(id))
+                .set((
+                    users::display_name.eq(&user.name),
+                    users::profile_pic_url.eq(&user.profile_pic_url),
+                ))
+                .execute(conn)?;
             return Ok(id);
         }
 

@@ -3,7 +3,7 @@ use leptos_meta::Title;
 use leptos_router::hooks::use_params_map;
 use serde::{Deserialize, Serialize};
 
-use crate::components::avatar::AvatarInfo;
+use crate::components::avatar::{Avatar, AvatarInfo};
 use crate::components::changelog_sidebar::{
     ChangeKind, ChangelogEntry, compute_changelog, word_diff,
 };
@@ -1243,6 +1243,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                             </div>
                                                         </div>
                                                         <ReadOnlySpecWithChangelog
+                                                            proposal_id=p.id
                                                             blocks=blocks
                                                             changelog=changelog
                                                             outline=outline
@@ -1307,6 +1308,7 @@ pub fn ProposalPage() -> impl IntoView {
                                                             _ => ().into_any(),
                                                         }}
                                                         <ReadOnlySpecWithChangelog
+                                                            proposal_id=p.id
                                                             blocks=blocks
                                                             changelog=changelog
                                                             outline=outline
@@ -1353,11 +1355,13 @@ pub fn ProposalPage() -> impl IntoView {
 
 #[component]
 fn ReadOnlySpecWithChangelog(
+    proposal_id: i32,
     blocks: Vec<SpecBlock>,
     changelog: Vec<ChangelogEntry>,
     outline: Vec<SpecOutline>,
     search_entries: Vec<SearchEntry>,
 ) -> impl IntoView {
+    let contributors = Resource::new(move || proposal_id, get_proposal_contributors);
     let changelog_empty = changelog.is_empty();
     let (content_entries, bump_entries): (Vec<_>, Vec<_>) = changelog
         .into_iter()
@@ -1381,6 +1385,31 @@ fn ReadOnlySpecWithChangelog(
             <aside style="flex-shrink: 0; width: 280px; position: sticky; top: 0; \
                           height: 100vh; overflow-y: auto; border-left: 1px solid #e5e7eb; \
                           background: #fafafa; font-size: 0.8rem;">
+                // Authors strip.
+                <Suspense fallback=|| ()>
+                    {move || Suspend::new(async move {
+                        let contribs = contributors.await.unwrap_or_default();
+                        if contribs.is_empty() {
+                            return ().into_any();
+                        }
+                        view! {
+                            <div style="border-bottom: 1px solid #e5e7eb; \
+                                        padding: 0.4rem 0.6rem; display: flex; \
+                                        align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                                <span style="font-size: 0.6rem; font-weight: 700; \
+                                             text-transform: uppercase; letter-spacing: 0.05em; \
+                                             color: #9ca3af; margin-right: 0.25rem; flex-shrink: 0;">
+                                    "Authors"
+                                </span>
+                                {contribs
+                                    .into_iter()
+                                    .map(|info| view! { <Avatar info=info size=24 /> })
+                                    .collect::<Vec<_>>()}
+                            </div>
+                        }
+                        .into_any()
+                    })}
+                </Suspense>
                 <div style="padding: 0.4rem 0.5rem; border-bottom: 1px solid #e5e7eb; \
                             font-size: 0.75rem; font-weight: 600; color: #111827;">
                     "Changes"
