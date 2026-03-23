@@ -153,6 +153,9 @@ pub enum GitHubError {
     #[error("GitHub API returned {status}: {body}")]
     Api { status: u16, body: String },
 
+    #[error("GitHub GraphQL error: {0}")]
+    Graphql(String),
+
     #[error("file not found: {0}")]
     NotFound(String),
 
@@ -679,6 +682,8 @@ impl GitHubClient {
                 body,
             });
         }
+        let body: serde_json::Value = resp.json().await?;
+        check_graphql_errors(&body)?;
 
         info!(pr_number, "converted PR to draft with comment");
         Ok(())
@@ -729,6 +734,8 @@ impl GitHubClient {
                 body,
             });
         }
+        let body: serde_json::Value = resp.json().await?;
+        check_graphql_errors(&body)?;
 
         info!(pr_number, "marked PR as ready for review");
         Ok(())
@@ -799,6 +806,30 @@ impl GitHubClient {
         }
         Ok(resp.json().await?)
     }
+}
+
+/// Check a GraphQL response body for a top-level `"errors"` field and return
+/// a `GitHubError::Graphql` if any are present. GraphQL always returns HTTP 200
+/// even for errors, so an HTTP status check alone is insufficient.
+fn check_graphql_errors(body: &serde_json::Value) -> Result<(), GitHubError> {
+    if let Some(errors) = body.get("errors") {
+        let msg = errors
+            .as_array()
+            .and_then(|arr| {
+                let msgs: Vec<&str> = arr
+                    .iter()
+                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .collect();
+                if msgs.is_empty() {
+                    None
+                } else {
+                    Some(msgs.join("; "))
+                }
+            })
+            .unwrap_or_else(|| errors.to_string());
+        return Err(GitHubError::Graphql(msg));
+    }
+    Ok(())
 }
 
 /// Decode base64 content from GitHub API responses, which include newlines
