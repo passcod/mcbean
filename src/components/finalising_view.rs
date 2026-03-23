@@ -305,27 +305,47 @@ fn ChangelogRow(
                 <div class="mt-3" style="font-size: 0.9rem;">
                     {match (&old, &new) {
                         (Some(o), Some(n)) => {
-                            let (_old_spans, new_spans) = word_diff(o, n);
+                            let (old_spans, new_spans) = word_diff(o, n);
                             view! {
-                                <div
-                                    class="content"
-                                    style="background: #f5f5f5; padding: 0.75rem; border-radius: 4px; white-space: pre-wrap;"
-                                >
-                                    {new_spans
-                                        .into_iter()
-                                        .map(|(is_common, text)| {
-                                            if !is_common {
-                                                view! {
-                                                    <span style="background: #fde68a; padding: 0 2px;">
-                                                        {text}
-                                                    </span>
+                                <div style="font-family: monospace; font-size: 0.85em;">
+                                    <div style="background: #fef2f2; padding: 0.5rem 0.75rem; border-radius: 4px 4px 0 0; white-space: pre-wrap;">
+                                        <span style="color: #b91c1c; font-weight: 600; margin-right: 0.4rem;">"−"</span>
+                                        {old_spans
+                                            .into_iter()
+                                            .map(|(is_common, text)| {
+                                                if !is_common {
+                                                    view! {
+                                                        <span style="background: #fecaca; text-decoration: line-through; padding: 0 2px;">
+                                                            {text}
+                                                        </span>
+                                                        " "
+                                                    }
+                                                    .into_any()
+                                                } else {
+                                                    view! { <span>{text}" "</span> }.into_any()
                                                 }
-                                                .into_any()
-                                            } else {
-                                                view! { <span>{text}" "</span> }.into_any()
-                                            }
-                                        })
-                                        .collect::<Vec<_>>()}
+                                            })
+                                            .collect::<Vec<_>>()}
+                                    </div>
+                                    <div style="background: #f0fdf4; padding: 0.5rem 0.75rem; border-radius: 0 0 4px 4px; white-space: pre-wrap;">
+                                        <span style="color: #15803d; font-weight: 600; margin-right: 0.4rem;">"+"</span>
+                                        {new_spans
+                                            .into_iter()
+                                            .map(|(is_common, text)| {
+                                                if !is_common {
+                                                    view! {
+                                                        <span style="background: #bbf7d0; padding: 0 2px;">
+                                                            {text}
+                                                        </span>
+                                                        " "
+                                                    }
+                                                    .into_any()
+                                                } else {
+                                                    view! { <span>{text}" "</span> }.into_any()
+                                                }
+                                            })
+                                            .collect::<Vec<_>>()}
+                                    </div>
                                 </div>
                             }
                             .into_any()
