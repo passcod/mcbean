@@ -680,7 +680,7 @@ pub async fn reopen_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
                 &repo_owner,
                 &repo_name,
                 pr_num as i64,
-                "This proposal has been reopened for editing in McBean. The pull request has been converted to draft.",
+                "This proposal has been reopened for editing in McBean. Please abstain from editing in GitHub directly, or starting any implementation on the current spec proposal.",
             )
             .await
             .map_err(|e| ServerFnError::new(format!("convert PR to draft: {e}")))?;
