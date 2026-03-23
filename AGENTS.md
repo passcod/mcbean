@@ -17,7 +17,7 @@
 - Prefer using `cargo add` to set dependencies, or if doing it manually, always write the full version numbers in Cargo.toml; `clap = "4.5.60"`, not `clap = "4"`.
 - To silence a warning, use `#[expect(..., reason = "...")]` instead of `#[allow(...)]`.
 - Don't use double spaces after punctuation.
-- Run `cargo clippy`, `cargo fmt`, and `tracey query status` before finishing an edit round.
+- Run `cargo clippy`, `cargo fmt`, and `tracey query status` before finishing an edit round. Use `just test` to run tests, `just check` to verify compilation across all targets, and `just migrate` to run migrations.
 - Spec items in docs/spec must describe **what** the system requires, not **how** the code achieves it. Keep function names, exact command lines, internal API details, env var names used only by the implementation, and similar out of spec text. Acceptable: interface contracts that external actors or other components depend on. When in doubt, ask whether someone re-implementing the feature from scratch would be constrained to the same choice; if not, it is an implementation detail.
 - When adding or changing features, or when fixing bugs, first change the tracey spec in docs/spec, then implement, then add tests whenever possible.
 - Remember to annotate implementations and tests with tracey references: https://tracey.bearcove.eu/guide/annotating-code/
