@@ -204,7 +204,11 @@ pub fn ChangelogSidebar(
 
     // r[impl proposal.diff.semantic]
     let entries = Signal::derive(move || {
-        initial_blocks.with_value(|init| compute_changelog(init, &blocks.get()))
+        let current = blocks.get();
+        if current.is_empty() {
+            return Vec::new();
+        }
+        initial_blocks.with_value(|init| compute_changelog(init, &current))
     });
 
     let collapsed = RwSignal::new(false);
