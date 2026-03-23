@@ -136,7 +136,7 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
                 })?
                 .specs
         }
-        Err(crate::github::GitHubError::NotFound(_)) => {
+        Err(crate::github::GitHubError::NotFound { .. }) => {
             tracing::warn!(path = config_path, "tracey config not found in repository");
             return Err(ServerFnError::new(
                 "No tracey configuration found at .config/tracey/config.styx — \

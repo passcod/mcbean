@@ -3,6 +3,8 @@ use loro::{
     ValueOrContainer, VersionVector,
 };
 #[cfg(feature = "ssr")]
+use snafu::{FromString, OptionExt, ResultExt, Whatever};
+#[cfg(feature = "ssr")]
 use tracing::{debug, info};
 
 use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind, slugify};
@@ -411,14 +413,12 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
 /// Empty slices in `update_rows` are silently skipped so callers do not need
 /// to filter them out.
 #[cfg(feature = "ssr")]
-pub fn reconstruct_doc(base: &[u8], update_rows: &[Vec<u8>]) -> anyhow::Result<LoroDoc> {
+pub fn reconstruct_doc(base: &[u8], update_rows: &[Vec<u8>]) -> Result<LoroDoc, Whatever> {
     let doc = LoroDoc::new();
-    doc.import(base)
-        .map_err(|e| anyhow::anyhow!("import base snapshot: {e}"))?;
+    doc.import(base).whatever_context("import base snapshot")?;
     for row in update_rows {
         if !row.is_empty() {
-            doc.import(row)
-                .map_err(|e| anyhow::anyhow!("import update: {e}"))?;
+            doc.import(row).whatever_context("import update")?;
         }
     }
     Ok(doc)
@@ -432,24 +432,25 @@ pub fn reconstruct_doc(base: &[u8], update_rows: &[Vec<u8>]) -> anyhow::Result<L
 /// the `"peer:counter"` key of a tree node whose `rule_id` metadata should be
 /// replaced.  Only nodes of kind `"rule"` are touched.
 #[cfg(feature = "ssr")]
-pub fn rename_rule_ids(doc: &LoroDoc, overrides: &[(String, String)]) -> anyhow::Result<()> {
+pub fn rename_rule_ids(doc: &LoroDoc, overrides: &[(String, String)]) -> Result<(), Whatever> {
     if overrides.is_empty() {
         return Ok(());
     }
     let tree = doc.get_tree(TREE_NAME);
     for (key, new_id) in overrides {
-        let tid = key_to_tree_id(key).ok_or_else(|| anyhow::anyhow!("invalid tree key: {key}"))?;
+        let tid =
+            key_to_tree_id(key).with_whatever_context(|| format!("invalid tree key: {key}"))?;
         let meta = tree
             .get_meta(tid)
-            .map_err(|e| anyhow::anyhow!("get_meta for {key}: {e}"))?;
+            .with_whatever_context(|e| format!("get_meta for {key}: {e}"))?;
         let kind = get_str(&meta, "kind");
         if kind != KIND_RULE {
-            return Err(anyhow::anyhow!(
+            return Err(Whatever::without_source(format!(
                 "node {key} is kind '{kind}', expected 'rule'"
-            ));
+            )));
         }
         meta.insert("rule_id", new_id.as_str())
-            .map_err(|e| anyhow::anyhow!("set rule_id on {key}: {e}"))?;
+            .with_whatever_context(|e| format!("set rule_id on {key}: {e}"))?;
     }
     Ok(())
 }

@@ -162,27 +162,29 @@ pub struct PullRequestResponse {
     pub draft: Option<bool>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, snafu::Snafu)]
 pub enum GitHubError {
-    #[error("HTTP request failed: {0}")]
-    Request(#[from] reqwest::Error),
+    #[snafu(transparent)]
+    Request { source: reqwest::Error },
 
-    #[error("GitHub API returned {status}: {body}")]
+    #[snafu(display("GitHub API returned {status}: {body}"))]
     Api { status: u16, body: String },
 
-    #[error("GitHub GraphQL error: {0}")]
-    Graphql(String),
+    #[snafu(display("GitHub GraphQL error: {message}"))]
+    Graphql { message: String },
 
-    #[error("file not found: {0}")]
-    NotFound(String),
+    #[snafu(display("file not found: {path}"))]
+    NotFound { path: String },
 
-    #[error("base64 decode error: {0}")]
-    Base64(#[from] base64::DecodeError),
+    #[snafu(transparent)]
+    Base64 { source: base64::DecodeError },
 
-    #[error("UTF-8 decode error: {0}")]
-    Utf8(#[from] std::string::FromUtf8Error),
+    #[snafu(transparent)]
+    Utf8 { source: std::string::FromUtf8Error },
 
-    #[error("tree listing was truncated; repository is too large for recursive tree fetch")]
+    #[snafu(display(
+        "tree listing was truncated; repository is too large for recursive tree fetch"
+    ))]
     TreeTruncated,
 }
 
@@ -229,10 +231,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         Ok(resp.json().await?)
     }
@@ -255,27 +258,34 @@ impl GitHubClient {
 
         let status = resp.status();
         if status.as_u16() == 404 {
-            return Err(GitHubError::NotFound(path.to_string()));
+            return NotFoundSnafu {
+                path: path.to_string(),
+            }
+            .fail();
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
 
         let contents: ContentsResponse = resp.json().await?;
         if contents.entry_type != "file" {
-            return Err(GitHubError::NotFound(format!(
-                "{path} is a {}, not a file",
-                contents.entry_type
-            )));
+            return NotFoundSnafu {
+                path: format!("{path} is a {}, not a file", contents.entry_type),
+            }
+            .fail();
         }
 
-        let encoded = contents
-            .content
-            .ok_or_else(|| GitHubError::NotFound(format!("{path}: no content in response")))?;
+        let encoded = contents.content.ok_or_else(|| {
+            NotFoundSnafu {
+                path: format!("{path}: no content in response"),
+            }
+            .build()
+        })?;
         let decoded = decode_github_base64(&encoded)?;
 
         Ok(FetchedFile {
@@ -299,10 +309,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
 
         let branch: BranchResponse = resp.json().await?;
@@ -329,15 +340,16 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
 
         let tree: TreeResponse = resp.json().await?;
         if tree.truncated {
-            return Err(GitHubError::TreeTruncated);
+            return TreeTruncatedSnafu.fail();
         }
 
         Ok(tree
@@ -363,18 +375,20 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
 
         let blob: BlobResponse = resp.json().await?;
         if blob.encoding != "base64" {
-            return Err(GitHubError::Api {
-                status: 0,
+            return ApiSnafu {
+                status: 0u16,
                 body: format!("unexpected blob encoding: {}", blob.encoding),
-            });
+            }
+            .fail();
         }
         decode_github_base64(&blob.content)
     }
@@ -418,9 +432,12 @@ impl GitHubClient {
                 let glob = GlobBuilder::new(pattern)
                     .literal_separator(true)
                     .build()
-                    .map_err(|e| GitHubError::Api {
-                        status: 0,
-                        body: format!("invalid glob pattern {pattern:?}: {e}"),
+                    .map_err(|e| {
+                        ApiSnafu {
+                            status: 0u16,
+                            body: format!("invalid glob pattern {pattern:?}: {e}"),
+                        }
+                        .build()
                     })?
                     .compile_matcher();
 
@@ -483,10 +500,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         Ok(())
     }
@@ -509,10 +527,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         let parent_commit: GitCommitResponse = resp.json().await?;
         let base_tree_sha = parent_commit.tree.sha;
@@ -540,10 +559,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         let new_tree: CreateTreeResponse = resp.json().await?;
 
@@ -562,10 +582,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         let new_commit: CreateCommitResponseData = resp.json().await?;
 
@@ -584,10 +605,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
 
         info!(new_sha = %new_commit.sha, "committed files to branch");
@@ -625,10 +647,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
 
         let pr: PullRequestResponse = resp.json().await?;
@@ -678,7 +701,7 @@ impl GitHubClient {
                 .map(|e| e.message.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(GitHubError::Graphql(msg));
+            return GraphqlSnafu { message: msg }.fail();
         }
 
         info!(pr_number, "converted PR to draft with comment");
@@ -712,7 +735,7 @@ impl GitHubClient {
                 .map(|e| e.message.as_str())
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(GitHubError::Graphql(msg));
+            return GraphqlSnafu { message: msg }.fail();
         }
 
         info!(pr_number, "marked PR as ready for review");
@@ -751,10 +774,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         let pr: PrNodeId = resp.json().await?;
         Ok(pr.node_id)
@@ -773,10 +797,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         Ok(resp.json().await?)
     }
@@ -802,10 +827,11 @@ impl GitHubClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(GitHubError::Api {
+            return ApiSnafu {
                 status: status.as_u16(),
                 body,
-            });
+            }
+            .fail();
         }
         Ok(resp.json().await?)
     }

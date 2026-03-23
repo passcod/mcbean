@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use diesel::prelude::*;
+use snafu::{FromString, ResultExt, Whatever};
 use tracing::{error, info, warn};
 
 use crate::components::loro_doc::build_doc_from_specs;
@@ -28,10 +29,10 @@ pub fn spawn(pool: DbPool, github: GitHubClient) {
     });
 }
 
-async fn sync_all(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<()> {
+async fn sync_all(pool: &DbPool, github: &GitHubClient) -> Result<(), Whatever> {
     info!("spec sync: starting cycle");
 
-    let conn = pool.get().await?;
+    let conn = pool.get().await.whatever_context("pool error")?;
 
     let repos: Vec<(i32, String, String, String, Option<String>)> = conn
         .interact(|conn| {
@@ -41,8 +42,8 @@ async fn sync_all(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<()> {
                 .load(conn)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-        .map_err(|e| anyhow::anyhow!("query error: {e}"))?;
+        .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+        .whatever_context("query error")?;
 
     info!(repo_count = repos.len(), "spec sync: loaded repositories");
 
@@ -76,10 +77,10 @@ async fn sync_all(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<()> {
 
 /// Poll GitHub for PR state changes on submitted/in-progress proposals and
 /// update their lifecycle accordingly.
-async fn sync_proposals(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<()> {
+async fn sync_proposals(pool: &DbPool, github: &GitHubClient) -> Result<(), Whatever> {
     info!("proposal sync: starting cycle");
 
-    let conn = pool.get().await?;
+    let conn = pool.get().await.whatever_context("pool error")?;
 
     // Load proposals that need monitoring: submitted or in_progress.
     let proposals: Vec<(i32, String, Option<i32>, i32, String)> = conn
@@ -91,8 +92,8 @@ async fn sync_proposals(pool: &DbPool, github: &GitHubClient) -> anyhow::Result<
                 .load(conn)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-        .map_err(|e| anyhow::anyhow!("query error: {e}"))?;
+        .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+        .whatever_context("query error")?;
 
     if proposals.is_empty() {
         info!("proposal sync: no active proposals to check");
@@ -136,8 +137,8 @@ async fn sync_single_proposal(
     pr_number: Option<i32>,
     repo_id: i32,
     current_status: &str,
-) -> anyhow::Result<()> {
-    let conn = pool.get().await?;
+) -> Result<(), Whatever> {
+    let conn = pool.get().await.whatever_context("pool error")?;
 
     // Load repo owner/name.
     let (repo_owner, repo_name): (String, String) = conn
@@ -149,14 +150,15 @@ async fn sync_single_proposal(
                 .first(conn)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-        .map_err(|e| anyhow::anyhow!("query error: {e}"))?;
+        .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+        .whatever_context("query error")?;
 
     // Check the backing PR state (if we have one).
     if let Some(pr_num) = pr_number {
         let pr: PullRequestResponse = github
             .get_pull_request(&repo_owner, &repo_name, pr_num as i64)
-            .await?;
+            .await
+            .whatever_context("get pull request")?;
 
         // r[impl lifecycle.merged]
         if pr.merged == Some(true) {
@@ -180,7 +182,8 @@ async fn sync_single_proposal(
     // Check for implementation PRs targeting the proposal branch.
     let impl_prs: Vec<PullRequestResponse> = github
         .list_prs_with_base(&repo_owner, &repo_name, branch_name)
-        .await?;
+        .await
+        .whatever_context("list PRs with base")?;
 
     let has_impl_prs = !impl_prs.is_empty();
 
@@ -216,8 +219,8 @@ async fn set_proposal_status(
     pool: &DbPool,
     proposal_id: i32,
     new_status: &str,
-) -> anyhow::Result<()> {
-    let conn = pool.get().await?;
+) -> Result<(), Whatever> {
+    let conn = pool.get().await.whatever_context("pool error")?;
     let status = new_status.to_owned();
     conn.interact(move |conn| {
         use crate::db::schema::proposals;
@@ -226,8 +229,8 @@ async fn set_proposal_status(
             .execute(conn)
     })
     .await
-    .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-    .map_err(|e| anyhow::anyhow!("update error: {e}"))?;
+    .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+    .whatever_context("update error")?;
     Ok(())
 }
 
@@ -239,8 +242,11 @@ async fn sync_repo(
     name: &str,
     branch: &str,
     old_sha: Option<&str>,
-) -> anyhow::Result<()> {
-    let head_sha = github.get_branch_head_sha(owner, name, branch).await?;
+) -> Result<(), Whatever> {
+    let head_sha = github
+        .get_branch_head_sha(owner, name, branch)
+        .await
+        .whatever_context("get branch head SHA")?;
 
     if old_sha == Some(head_sha.as_str()) {
         info!(repo_id, %head_sha, "spec sync: repo unchanged, skipping");
@@ -257,7 +263,7 @@ async fn sync_repo(
     // Check whether we already have a snapshot for this exact commit SHA.
     // This can happen if the sync task runs twice before the repo advances.
     {
-        let conn = pool.get().await?;
+        let conn = pool.get().await.whatever_context("pool error")?;
         let sha = head_sha.clone();
         let already_stored: bool = conn
             .interact(move |conn| {
@@ -270,13 +276,13 @@ async fn sync_repo(
                 Ok::<_, diesel::result::Error>(count > 0)
             })
             .await
-            .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-            .map_err(|e: diesel::result::Error| anyhow::anyhow!("query error: {e}"))?;
+            .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+            .whatever_context("query error")?;
 
         if already_stored {
             info!(repo_id, %head_sha, "spec sync: snapshot already stored for this SHA");
             // Still update last_synced_sha so we skip next time.
-            let conn = pool.get().await?;
+            let conn = pool.get().await.whatever_context("pool error")?;
             let sha = head_sha.clone();
             conn.interact(move |conn| {
                 use crate::db::schema::repositories::dsl::*;
@@ -285,8 +291,8 @@ async fn sync_repo(
                     .execute(conn)
             })
             .await
-            .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-            .map_err(|e: diesel::result::Error| anyhow::anyhow!("update error: {e}"))?;
+            .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+            .whatever_context("update error")?;
             return Ok(());
         }
     }
@@ -297,18 +303,18 @@ async fn sync_repo(
         .await
     {
         Ok(f) => f.content,
-        Err(crate::github::GitHubError::NotFound(_)) => {
+        Err(crate::github::GitHubError::NotFound { .. }) => {
             warn!(
                 repo_id,
                 "spec sync: tracey config disappeared from repo, skipping"
             );
             return Ok(());
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e).whatever_context("fetch tracey config"),
     };
 
-    let config: tracey_config::Config = facet_styx::from_str(&config_content)
-        .map_err(|e| anyhow::anyhow!("failed to parse tracey config: {e}"))?;
+    let config: tracey_config::Config =
+        facet_styx::from_str(&config_content).whatever_context("parse tracey config")?;
 
     if config.specs.is_empty() {
         warn!(repo_id, "spec sync: tracey config has no specs, skipping");
@@ -322,7 +328,8 @@ async fn sync_repo(
     for spec_def in &config.specs {
         let fetched = github
             .resolve_include_patterns(owner, name, branch, &spec_def.include)
-            .await?;
+            .await
+            .whatever_context("resolve include patterns")?;
 
         info!(
             repo_id,
@@ -341,7 +348,7 @@ async fn sync_repo(
     let doc = build_doc_from_specs(&specs_with_files).await;
     let loro_bytes = doc
         .export(loro::ExportMode::Snapshot)
-        .map_err(|e| anyhow::anyhow!("loro export failed: {e}"))?;
+        .whatever_context("loro export")?;
 
     info!(
         repo_id,
@@ -351,7 +358,7 @@ async fn sync_repo(
     );
 
     // Persist everything in a single transaction.
-    let conn = pool.get().await?;
+    let conn = pool.get().await.whatever_context("pool error")?;
     let sha = head_sha.clone();
     let spec_names: Vec<String> = specs_with_files.iter().map(|(n, _)| n.clone()).collect();
 
@@ -412,8 +419,8 @@ async fn sync_repo(
         })
     })
     .await
-    .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
-    .map_err(|e: diesel::result::Error| anyhow::anyhow!("transaction error: {e}"))?;
+    .map_err(|e| snafu::Whatever::without_source(format!("interact error: {e}")))?
+    .whatever_context("transaction error")?;
 
     info!(repo_id, %head_sha, "spec sync: repo updated successfully");
     Ok(())
