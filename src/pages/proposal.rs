@@ -704,6 +704,83 @@ pub async fn reopen_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
     Ok(())
 }
 
+/// Archive a proposal from any state except in_progress.
+// r[impl lifecycle.archived]
+#[server]
+pub async fn archive_proposal(proposal_id: i32) -> Result<(), ServerFnError> {
+    use diesel::prelude::*;
+
+    let pool =
+        use_context::<crate::db::DbPool>().ok_or_else(|| ServerFnError::new("No database pool"))?;
+    let github = use_context::<crate::github::GitHubClient>()
+        .ok_or_else(|| ServerFnError::new("No GitHub client"))?;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+
+    let (status, pr_number, repo_owner, repo_name) = conn
+        .interact(move |conn| {
+            use crate::db::schema::{proposals, repositories};
+
+            let (status, pr_number, repo_id): (String, Option<i32>, i32) = proposals::table
+                .find(proposal_id)
+                .select((
+                    proposals::status,
+                    proposals::pr_number,
+                    proposals::repository_id,
+                ))
+                .first(conn)?;
+
+            let (repo_owner, repo_name): (String, String) = repositories::table
+                .find(repo_id)
+                .select((repositories::owner, repositories::name))
+                .first(conn)?;
+
+            Ok::<_, diesel::result::Error>((status, pr_number, repo_owner, repo_name))
+        })
+        .await
+        .map_err(|e| ServerFnError::new(format!("interact: {e}")))?
+        .map_err(|e: diesel::result::Error| ServerFnError::new(format!("query: {e}")))?;
+
+    if status == "in_progress" {
+        return Err(ServerFnError::new(
+            "cannot archive a proposal that is in progress",
+        ));
+    }
+
+    if status == "archived" {
+        return Err(ServerFnError::new("proposal is already archived"));
+    }
+
+    // Close the backing PR when archiving from the submitted state.
+    if status == "submitted"
+        && let Some(pr_num) = pr_number
+    {
+        github
+            .close_pull_request(&repo_owner, &repo_name, pr_num as i64)
+            .await
+            .map_err(|e| ServerFnError::new(format!("close PR: {e}")))?;
+    }
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e}")))?;
+    conn.interact(move |conn| {
+        use crate::db::schema::proposals;
+        diesel::update(proposals::table.find(proposal_id))
+            .set(proposals::status.eq("archived"))
+            .execute(conn)
+    })
+    .await
+    .map_err(|e| ServerFnError::new(format!("{e}")))?
+    .map_err(|e: diesel::result::Error| ServerFnError::new(format!("{e}")))?;
+
+    Ok(())
+}
+
 #[component]
 pub fn ProposalPage() -> impl IntoView {
     let params = use_params_map();
@@ -771,6 +848,13 @@ pub fn ProposalPage() -> impl IntoView {
         async move { reopen_proposal(pid).await }
     });
 
+    // Any archivable state -> Archived
+    // r[impl lifecycle.archived]
+    let archive_action = Action::new(move |_: &()| {
+        let pid = proposal_id();
+        async move { archive_proposal(pid).await }
+    });
+
     // Refetch proposal after any state transition succeeds.
     Effect::new(move |_| {
         if let Some(Ok(())) = finalise_action.value().get() {
@@ -789,6 +873,11 @@ pub fn ProposalPage() -> impl IntoView {
     });
     Effect::new(move |_| {
         if let Some(Ok(())) = reopen_action.value().get() {
+            refetch_version.update(|v| *v = v.wrapping_add(1));
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(Ok(())) = archive_action.value().get() {
             refetch_version.update(|v| *v = v.wrapping_add(1));
         }
     });
@@ -813,6 +902,7 @@ pub fn ProposalPage() -> impl IntoView {
                             let is_drafting = status == "drafting";
                             let is_finalising = status == "finalising";
                             let is_submitted = status == "submitted";
+                            let can_archive = status != "in_progress" && status != "archived";
                             let initial_title = display_title.clone();
                             let sidebar_title = display_title.clone();
 
@@ -902,10 +992,30 @@ pub fn ProposalPage() -> impl IntoView {
                                                     "in_progress" => "is-info",
                                                     "merged" => "is-success",
                                                     "abandoned" => "is-danger",
+                                                    "archived" => "is-dark",
                                                     _ => "is-light",
                                                 },
                                             )>{status.clone()}</span>
                                         </div>
+                                        <Show when=move || can_archive>
+                                            <div class="level-item ml-2">
+                                                <button
+                                                    class="button is-small is-light"
+                                                    disabled=move || archive_action.pending().get()
+                                                    on:click=move |_| {
+                                                        archive_action.dispatch(());
+                                                    }
+                                                >
+                                                    {move || {
+                                                        if archive_action.pending().get() {
+                                                            "Archiving…"
+                                                        } else {
+                                                            "Archive"
+                                                        }
+                                                    }}
+                                                </button>
+                                            </div>
+                                        </Show>
                                     </div>
                                 </div>
 
@@ -916,6 +1026,7 @@ pub fn ProposalPage() -> impl IntoView {
                                         unfinalise_action.value().get().and_then(|r| r.err()),
                                         submit_action.value().get().and_then(|r| r.err()),
                                         reopen_action.value().get().and_then(|r| r.err()),
+                                        archive_action.value().get().and_then(|r| r.err()),
                                     ]
                                     .into_iter()
                                     .flatten()
@@ -1109,6 +1220,14 @@ pub fn ProposalPage() -> impl IntoView {
                                                                     <p>
                                                                         <strong>"This proposal has been merged."</strong>
                                                                         " The spec changes are now part of the main branch."
+                                                                    </p>
+                                                                </div>
+                                                            }.into_any(),
+                                                            "archived" => view! {
+                                                                <div class="notification is-dark is-light mb-4">
+                                                                    <p>
+                                                                        <strong>"This proposal has been archived."</strong>
+                                                                        " It is read-only and no further action can be taken."
                                                                     </p>
                                                                 </div>
                                                             }.into_any(),

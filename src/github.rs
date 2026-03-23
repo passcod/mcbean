@@ -154,6 +154,11 @@ struct CreatePullRequestBody<'a> {
     body: Option<&'a str>,
 }
 
+#[derive(Debug, Serialize)]
+struct ClosePullRequestBody {
+    state: &'static str,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PullRequestResponse {
     pub number: i64,
@@ -657,6 +662,38 @@ impl GitHubClient {
         let pr: PullRequestResponse = resp.json().await?;
         info!(pr_number = pr.number, "pull request created");
         Ok(pr.number)
+    }
+
+    /// Close a pull request by setting its state to "closed".
+    #[instrument(skip(self), fields(owner, repo, pr_number))]
+    pub async fn close_pull_request(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: i64,
+    ) -> Result<(), GitHubError> {
+        let url = format!("{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls/{pr_number}");
+        let req = ClosePullRequestBody { state: "closed" };
+        debug!(%url, pr_number, "closing pull request");
+
+        let resp = self
+            .apply_auth(self.client.patch(&url))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return ApiSnafu {
+                status: status.as_u16(),
+                body,
+            }
+            .fail();
+        }
+
+        info!(pr_number, "pull request closed");
+        Ok(())
     }
 
     /// Convert an existing PR to draft mode using the GraphQL API, and post
