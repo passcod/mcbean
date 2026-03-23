@@ -255,6 +255,11 @@ McBean MUST indicate that implementation was previously abandoned.
 r[lifecycle.merged]
 When the proposal branch is merged into the repository's main branch, the proposal transitions to the Merged state.
 
+r[lifecycle.archived]
+A proposal MAY be archived from any state except In Progress.
+Archiving transitions the proposal to the Archived state, which is permanent and read-only.
+When a proposal in the Submitted state is archived, the backing pull request MUST be closed.
+
 ## Notifications
 
 r[notify.slack]
