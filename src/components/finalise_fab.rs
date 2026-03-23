@@ -65,8 +65,8 @@ pub fn FinaliseFab(
             </div>
             <div style="padding: 0.875rem 1rem 1rem;">
                 <p class="is-size-7 has-text-grey mb-4">
-                    "Rule IDs will be reviewed and finalised, then a pull request \
-                     will be opened in the backing repository for implementation."
+                    "You'll review all changes and assign final rule IDs \
+                     before submitting."
                 </p>
                 <button
                     class="button is-success is-fullwidth"
@@ -76,7 +76,7 @@ pub fn FinaliseFab(
                         on_finalise.run(());
                     }
                 >
-                    {move || if pending { "Finalising…" } else { "Finalise & Submit" }}
+                    {move || if pending { "Finalising…" } else { "Review & Finalise" }}
                 </button>
             </div>
         </div>
