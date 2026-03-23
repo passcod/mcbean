@@ -210,9 +210,12 @@ pub async fn add_repository(github_url: String) -> Result<AddRepoResult, ServerF
 
     // Verify that at least one spec has at least one file with tracey rule annotations
     let has_tracey_rules = spec_files_by_spec.iter().any(|(_, files)| {
-        files
-            .iter()
-            .any(|(_, content)| content.contains("r[") && content.contains(']'))
+        files.iter().any(|(_, content)| {
+            content
+                .as_bytes()
+                .windows(2)
+                .any(|w| w[0].is_ascii_lowercase() && w[1] == b'[')
+        })
     });
 
     if !has_tracey_rules {

@@ -14,6 +14,7 @@ pub enum SpecBlockKind {
         anchor: String,
     },
     Rule {
+        prefix: String,
         id: String,
         text: String,
     },
@@ -387,9 +388,15 @@ pub async fn parse_blocks_from_content(content: &str) -> Vec<SpecBlock> {
                     "parse_blocks_from_content: stripped prose"
                 );
 
+                let prefix = r
+                    .anchor_id
+                    .split_once('-')
+                    .map(|(p, _)| p.to_string())
+                    .unwrap_or_else(|| "r".to_string());
                 blocks.push(SpecBlock {
                     key,
                     kind: SpecBlockKind::Rule {
+                        prefix,
                         id: r.id.to_string(),
                         text: prose,
                     },
@@ -517,7 +524,7 @@ mod tests {
             "expected exactly one block, got: {blocks:#?}"
         );
         match &blocks[0].kind {
-            SpecBlockKind::Rule { id, text } => {
+            SpecBlockKind::Rule { id, text, .. } => {
                 assert_eq!(id, "foo.bar");
                 assert_eq!(text, "This is the rule text.");
             }
@@ -777,7 +784,7 @@ A simple single-paragraph rule after the multi-para one.
                 SpecBlockKind::Heading { level, text, .. } => {
                     println!("  [{i}] Heading(level={level}, text={text:?})")
                 }
-                SpecBlockKind::Rule { id, text } => println!(
+                SpecBlockKind::Rule { id, text, .. } => println!(
                     "  [{i}] Rule(id={id:?}, text_lines={})",
                     text.lines().count()
                 ),
@@ -908,7 +915,7 @@ A simple single-paragraph rule after the multi-para one.
                 SpecBlockKind::Heading { level, text, .. } => {
                     println!("  [{i}] Heading({level}, {text:?})")
                 }
-                SpecBlockKind::Rule { id, text } => println!(
+                SpecBlockKind::Rule { id, text, .. } => println!(
                     "  [{i}] Rule({id:?}, {} lines, first 80: {:?})",
                     text.lines().count(),
                     &text[..text.len().min(80)]
@@ -1048,6 +1055,7 @@ A simple single-paragraph rule after the multi-para one.
             SpecBlock {
                 key: "1:1".into(),
                 kind: SpecBlockKind::Rule {
+                    prefix: "r".into(),
                     id: "test.rule".into(),
                     text: "Rule text here".into(),
                 },
@@ -1227,9 +1235,9 @@ pub fn SpecBlockEditor(
                     for block in snapshot {
                         use marq::{RenderOptions, render};
                         let raw = match &block.kind {
-                            SpecBlockKind::Rule { id, text } => {
-                                crate::components::loro_doc::rule_to_markdown(id, text)
-                            }
+                            SpecBlockKind::Rule {
+                                prefix, id, text, ..
+                            } => crate::components::loro_doc::rule_to_markdown(prefix, id, text),
                             SpecBlockKind::Paragraph { text } if !text.is_empty() => {
                                 format!("{}\n\n", text)
                             }
@@ -1553,8 +1561,9 @@ pub fn SpecBlockEditor(
                                     meta.insert("level", *level as i64).ok();
                                     set_text_content(&meta, text);
                                 }
-                                SpecBlockKind::Rule { id, text } => {
+                                SpecBlockKind::Rule { prefix, id, text } => {
                                     meta.insert("kind", "rule").ok();
+                                    meta.insert("prefix", prefix.as_str()).ok();
                                     meta.insert("rule_id", id.as_str()).ok();
                                     set_text_content(&meta, text);
                                 }
@@ -1655,8 +1664,8 @@ pub fn SpecBlockEditor(
                 // bindings shadowing the outer variable.
                 let raw = blocks_out.with_untracked(|list| {
                     list.iter().find(|b| b.key == key).map(|b| match &b.kind {
-                        SpecBlockKind::Rule { id, .. } => {
-                            crate::components::loro_doc::rule_to_markdown(id, &text)
+                        SpecBlockKind::Rule { prefix, id, .. } => {
+                            crate::components::loro_doc::rule_to_markdown(prefix, id, &text)
                         }
                         SpecBlockKind::Heading { level, .. } => {
                             format!("{} {}\n\n", "#".repeat(*level as usize), text)
@@ -1847,8 +1856,9 @@ pub fn SpecBlockEditor(
                         meta.insert("level", *level as i64).ok();
                         set_text_content(&meta, text);
                     }
-                    SpecBlockKind::Rule { id, text } => {
+                    SpecBlockKind::Rule { prefix, id, text } => {
                         meta.insert("kind", "rule").ok();
+                        meta.insert("prefix", prefix.as_str()).ok();
                         meta.insert("rule_id", id.as_str()).ok();
                         set_text_content(&meta, text);
                     }
@@ -1911,6 +1921,7 @@ pub fn SpecBlockEditor(
                     insert_block(
                         TOP_DROP_KEY.to_string(),
                         SpecBlockKind::Rule {
+                            prefix: "r".to_string(),
                             id: next_provisional_id(),
                             text: String::new(),
                         },
@@ -1937,6 +1948,12 @@ pub fn SpecBlockEditor(
                     let rule_id: StoredValue<Option<String>> =
                         StoredValue::new(if let SpecBlockKind::Rule { id, .. } = &block.kind {
                             Some(id.clone())
+                        } else {
+                            None
+                        });
+                    let rule_prefix: StoredValue<Option<String>> =
+                        StoredValue::new(if let SpecBlockKind::Rule { prefix, .. } = &block.kind {
+                            Some(prefix.clone())
                         } else {
                             None
                         });
@@ -2028,9 +2045,10 @@ pub fn SpecBlockEditor(
                                 {move || {
                                     rule_id.with_value(|rid| {
                                         if let Some(id) = rid {
+                                            let pfx = rule_prefix.get_value().unwrap_or_else(|| "r".to_string());
                                             view! {
                                                 <span class="spec-block-badge spec-block-badge--rule">
-                                                    {format!("r[{}]", id)}
+                                                    {format!("{}[{}]", pfx, id)}
                                                 </span>
                                             }
                                             .into_any()
@@ -2130,6 +2148,7 @@ pub fn SpecBlockEditor(
                                     insert_block(
                                         key.get_value(),
                                         SpecBlockKind::Rule {
+                                            prefix: "r".to_string(),
                                             id: next_provisional_id(),
                                             text: String::new(),
                                         },

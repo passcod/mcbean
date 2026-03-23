@@ -15,7 +15,7 @@ fn provisional_rules(blocks: &[SpecBlock]) -> Vec<(String, String)> {
     blocks
         .iter()
         .filter_map(|b| match &b.kind {
-            SpecBlockKind::Rule { id, text } if is_provisional_id(id) => {
+            SpecBlockKind::Rule { id, .. } if is_provisional_id(id) => {
                 Some((b.key.clone(), id.clone()))
             }
             _ => None,
@@ -334,6 +334,7 @@ mod tests {
         SpecBlock {
             key: key.to_string(),
             kind: SpecBlockKind::Rule {
+                prefix: "r".to_string(),
                 id: id.to_string(),
                 text: text.to_string(),
             },

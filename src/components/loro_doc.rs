@@ -25,9 +25,9 @@ use crate::components::spec_block_editor::{SpecBlock, SpecBlockKind, slugify};
 /// >
 /// > Second paragraph line 1
 /// ```
-pub fn rule_to_markdown(rule_id: &str, text: &str) -> String {
+pub fn rule_to_markdown(prefix: &str, rule_id: &str, text: &str) -> String {
     let trimmed = text.trim();
-    let mut out = format!("> r[{rule_id}]\n");
+    let mut out = format!("> {prefix}[{rule_id}]\n");
     let paragraphs: Vec<&str> = trimmed.split("\n\n").collect();
     for (i, para) in paragraphs.iter().enumerate() {
         if i > 0 {
@@ -139,6 +139,12 @@ fn collect_blocks_under(tree: &LoroTree, parent: TreeParentId, out: &mut Vec<Spe
             KIND_RULE => {
                 let text = get_text_str(&meta);
                 let rule_id = get_str(&meta, "rule_id");
+                let prefix = get_str(&meta, "prefix");
+                let prefix = if prefix.is_empty() {
+                    "r".to_string()
+                } else {
+                    prefix
+                };
                 // Generate HTML that matches the .req/.req-link CSS structure.
                 // commit_edit will replace this with a full marq-rendered version
                 // after the user edits the block; the background render pass in
@@ -146,15 +152,20 @@ fn collect_blocks_under(tree: &LoroTree, parent: TreeParentId, out: &mut Vec<Spe
                 let html = format!(
                     "<div class=\"req\">\
                      <a class=\"req-link\" id=\"{id}\" href=\"#{id}\">\
-                     <span>r[{id}]</span></a>\
+                     <span>{prefix}[{id}]</span></a>\
                      <p>{text}</p>\
                      </div>",
+                    prefix = html_escape(&prefix),
                     id = html_escape(&rule_id),
                     text = html_escape(&text),
                 );
                 out.push(SpecBlock {
                     key: tree_id_to_key(node_id),
-                    kind: SpecBlockKind::Rule { id: rule_id, text },
+                    kind: SpecBlockKind::Rule {
+                        prefix,
+                        id: rule_id,
+                        text,
+                    },
                     html,
                 });
             }
@@ -280,7 +291,7 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
                 debug!(index = i, "insert_flat_blocks: heading done");
                 stack.push((*level, node));
             }
-            SpecBlockKind::Rule { id, text } => {
+            SpecBlockKind::Rule { prefix, id, text } => {
                 debug!(
                     index = i,
                     rule_id = %id,
@@ -295,6 +306,7 @@ fn insert_flat_blocks(tree: &LoroTree, file_node: TreeID, blocks: &[SpecBlock]) 
                 let meta = tree.get_meta(node).expect("rule meta");
                 meta.insert("kind", KIND_RULE).unwrap();
                 meta.insert("rule_id", id.as_str()).unwrap();
+                meta.insert("prefix", prefix.as_str()).unwrap();
                 debug!(index = i, rule_id = %id, "insert_flat_blocks: calling set_text_content for rule");
                 set_text_content(&meta, text);
                 debug!(index = i, rule_id = %id, "insert_flat_blocks: rule done");
@@ -469,7 +481,13 @@ fn write_markdown_under(tree: &LoroTree, parent: TreeParentId, out: &mut String)
             KIND_RULE => {
                 let rule_id = get_str(&meta, "rule_id");
                 let text = get_text_str(&meta);
-                out.push_str(&rule_to_markdown(&rule_id, &text));
+                let prefix = get_str(&meta, "prefix");
+                let prefix = if prefix.is_empty() {
+                    "r".to_string()
+                } else {
+                    prefix
+                };
+                out.push_str(&rule_to_markdown(&prefix, &rule_id, &text));
             }
             KIND_PARA => {
                 let text = get_text_str(&meta);
@@ -611,7 +629,7 @@ mod tests {
         let blocks = pipeline("r[foo.bar]\nThe rule text.\n");
         assert_eq!(blocks.len(), 1, "{blocks:#?}");
         match &blocks[0].kind {
-            SpecBlockKind::Rule { id, text } => {
+            SpecBlockKind::Rule { id, text, .. } => {
                 assert_eq!(id, "foo.bar");
                 assert_eq!(text, "The rule text.");
             }
@@ -723,7 +741,7 @@ A simple rule after.
                 SpecBlockKind::Heading { level, text, .. } => {
                     println!("  [{i}] Heading({level}, {text:?})")
                 }
-                SpecBlockKind::Rule { id, text } => {
+                SpecBlockKind::Rule { id, text, .. } => {
                     println!("  [{i}] Rule({id:?}, {} lines)", text.lines().count())
                 }
                 SpecBlockKind::Paragraph { text } => {
@@ -796,7 +814,7 @@ A simple rule after.
         let blocks = round_trip_pipeline("r[foo.bar]\nThe rule text.\n");
         assert_eq!(blocks.len(), 1, "{blocks:#?}");
         match &blocks[0].kind {
-            SpecBlockKind::Rule { id, text } => {
+            SpecBlockKind::Rule { id, text, .. } => {
                 assert_eq!(id, "foo.bar");
                 assert_eq!(text.trim(), "The rule text.");
             }
@@ -814,7 +832,7 @@ A simple rule after.
                 SpecBlockKind::Heading { level, text, .. } => {
                     println!("  [{i}] Heading({level}, {text:?})")
                 }
-                SpecBlockKind::Rule { id, text } => {
+                SpecBlockKind::Rule { id, text, .. } => {
                     println!("  [{i}] Rule({id:?}, {} lines)", text.lines().count())
                 }
                 SpecBlockKind::Paragraph { text } => {
@@ -1037,7 +1055,7 @@ A simple rule after.
         let blocks_after = loro_doc_to_blocks(&doc);
         assert_eq!(blocks_after.len(), 1);
         match &blocks_after[0].kind {
-            SpecBlockKind::Rule { id, text } => {
+            SpecBlockKind::Rule { id, text, .. } => {
                 assert_eq!(id, "my.rule", "rule ID must be preserved after text edit");
                 assert_eq!(text, "Updated text.");
             }

@@ -28,7 +28,7 @@ pub struct ChangelogEntry {
 
 fn block_label(b: &SpecBlock) -> String {
     match &b.kind {
-        SpecBlockKind::Rule { id, .. } => format!("r[{}]", id),
+        SpecBlockKind::Rule { prefix, id, .. } => format!("{}[{}]", prefix, id),
         SpecBlockKind::Heading { level, text, .. } => {
             let prefix = "#".repeat(*level as usize);
             if text.is_empty() {
@@ -641,6 +641,7 @@ mod tests {
         SpecBlock {
             key: key.into(),
             kind: SpecBlockKind::Rule {
+                prefix: "r".to_string(),
                 id: id.into(),
                 text: text.into(),
             },
